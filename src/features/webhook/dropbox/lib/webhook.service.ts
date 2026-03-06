@@ -5,7 +5,10 @@ import z from 'zod'
 import env from '@/config/server.env'
 import db from '@/db'
 import { type ChannelSyncSelectType, channelSync } from '@/db/schema/channelSync.schema'
-import type { DropboxConnectionTokens } from '@/db/schema/dropboxConnections.schema'
+import {
+  type DropboxConnectionTokens,
+  dropboxConnections,
+} from '@/db/schema/dropboxConnections.schema'
 import APIError from '@/errors/APIError'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import type { DropboxFileListFolderResultEntries } from '@/features/sync/types'
@@ -14,9 +17,43 @@ import { generateToken } from '@/lib/copilot/generateToken'
 import User from '@/lib/copilot/models/User.model'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import logger from '@/lib/logger'
-import { handleChannelFileChanges } from '@/trigger/processFileSync'
+import { handleChannelFileChanges, processDropboxChanges } from '@/trigger/processFileSync'
+
+const DEBOUNCE_WINDOW_MS = 60 * 60 * 1000 // 1 hour
 
 export class DropboxWebhook {
+  async handleDropboxEvents(accounts: string[]) {
+    for (const account of accounts) {
+      const connection = await db.query.dropboxConnections.findFirst({
+        where: (t, { eq, and }) => and(eq(t.accountId, account), eq(t.status, true)),
+        columns: { id: true, pendingWebhook: true, lastWebhookSyncedAt: true },
+      })
+
+      if (!connection) continue
+
+      // Skip if already pending — cron will handle it
+      if (connection.pendingWebhook) {
+        console.info(`Webhook skipped for account ${account}, already has pending webhook`)
+        continue
+      }
+
+      // Debounce: if the account was synced recently, defer to cron
+      const debounceThreshold = new Date(Date.now() - DEBOUNCE_WINDOW_MS)
+      const recentlySynced =
+        connection.lastWebhookSyncedAt && connection.lastWebhookSyncedAt >= debounceThreshold
+
+      if (recentlySynced) {
+        await db
+          .update(dropboxConnections)
+          .set({ pendingWebhook: true })
+          .where(eq(dropboxConnections.id, connection.id))
+        console.info(`Webhook debounced for account ${account}, marked as pending`)
+      } else {
+        await processDropboxChanges.trigger(account, { concurrencyKey: account })
+      }
+    }
+  }
+
   async fetchDropBoxChanges(accountId: string) {
     const connection = await this.getActiveConnection(accountId)
 
@@ -58,6 +95,17 @@ export class DropboxWebhook {
           connectionToken,
         ))
     }
+
+    // Clear pending webhook flag after all channels for this account are processed
+    await db
+      .update(dropboxConnections)
+      .set({ pendingWebhook: false, lastWebhookSyncedAt: new Date() })
+      .where(
+        and(
+          eq(dropboxConnections.accountId, accountId),
+          eq(dropboxConnections.portalId, connection.portalId),
+        ),
+      )
   }
 
   async getDropboxFileMetadata(filePath: string, dbxClient: Dropbox) {
