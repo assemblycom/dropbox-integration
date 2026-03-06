@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import status from 'http-status'
 import { type NextRequest, NextResponse } from 'next/server'
 import env from '@/config/server.env'
-import { processDropboxChanges } from '@/trigger/processFileSync'
+import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
 import { sleep } from '@/utils/sleep'
 
 export const handleWebhookUrlVerification = (req: NextRequest) => {
@@ -48,13 +48,8 @@ export const handleWebhookEvents = async (req: NextRequest) => {
   const { list_folder } = JSON.parse(body)
   const accounts = list_folder?.accounts ?? []
 
-  await Promise.all(
-    accounts.map((account: string) =>
-      processDropboxChanges.trigger(account, {
-        concurrencyKey: account,
-      }),
-    ),
-  )
+  const dropboxWebhook = new DropboxWebhook()
+  await dropboxWebhook.handleDropboxEvents(accounts)
 
   // Dropbox expects a 200 OK with plain text body
   return new NextResponse('', {

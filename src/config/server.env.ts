@@ -13,6 +13,7 @@ const ServerEnvSchema = z.object({
   DROPBOX_API_URL: z.url(),
   TRIGGER_MACHINE: TriggerMachineSchema,
   CRON_SECRET: z.string().min(1),
+  WEBHOOK_CATCHUP_CRON: z.string().min(1),
 })
 
 const env = ServerEnvSchema.parse(process.env)

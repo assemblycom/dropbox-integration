@@ -71,6 +71,13 @@
       "when": 1770117966182,
       "tag": "20260203112606_add-uq-to-channel-sync",
       "breakpoints": false
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1772784522115,
+      "tag": "20260306080842_add_webhook_debounce_columns_to_dropbox_connections",
+      "breakpoints": false
     }
   ]
 }

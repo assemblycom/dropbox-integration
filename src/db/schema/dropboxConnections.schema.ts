@@ -1,4 +1,4 @@
-import { boolean, pgTable, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core'
+import { boolean, pgTable, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core'
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-zod'
 import type z from 'zod'
 import { timestamps } from '@/db/db.helpers'
@@ -22,6 +22,12 @@ export const dropboxConnections = pgTable(
 
     // Connection status
     status: boolean().notNull().default(false),
+
+    // Flag to indicate a Dropbox webhook was deferred (debounced) and needs processing by cron
+    pendingWebhook: boolean().default(false).notNull(),
+
+    // Timestamp of last completed webhook-triggered sync for this account
+    lastWebhookSyncedAt: timestamp({ withTimezone: true, mode: 'date' }),
 
     // Copilot internalUserId that initiated the connection
     initiatedBy: uuid().notNull(),
