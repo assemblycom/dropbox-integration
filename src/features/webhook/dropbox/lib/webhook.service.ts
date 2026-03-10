@@ -19,7 +19,7 @@ import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import logger from '@/lib/logger'
 import { handleChannelFileChanges, processDropboxChanges } from '@/trigger/processFileSync'
 
-const DEBOUNCE_WINDOW_MS = 60 * 60 * 1000 // 1 hour
+const DEBOUNCE_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
 
 export class DropboxWebhook {
   async handleDropboxEvents(accounts: string[]) {
@@ -214,7 +214,7 @@ export class DropboxWebhook {
         mapFilesService,
         channelSyncId,
       )
-      if (!dbxChanges) continue
+      if (!dbxChanges) break
 
       const { entries, newCursor, hasMore: more } = dbxChanges
 
@@ -224,7 +224,7 @@ export class DropboxWebhook {
     }
 
     if (allChanges.length > 0) {
-      await handleChannelFileChanges.trigger({
+      await handleChannelFileChanges.triggerAndWait({
         files: allChanges,
         channelSyncId,
         dbxRootPath,
