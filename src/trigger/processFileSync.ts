@@ -261,7 +261,7 @@ export const handleChannelFileChanges = task({
         const existingFile = mappedFiles.find((item) => item.dbxFileId === file.id)
 
         if (existingFile?.contentHash && existingFile.contentHash !== file.content_hash) {
-          await updateDropboxFileInAssembly.trigger({
+          await updateDropboxFileInAssembly.triggerAndWait({
             opts: {
               dbxRootPath,
               assemblyChannelId,
