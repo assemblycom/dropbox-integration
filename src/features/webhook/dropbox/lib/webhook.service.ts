@@ -26,7 +26,7 @@ export class DropboxWebhook {
     for (const account of accounts) {
       const connection = await db.query.dropboxConnections.findFirst({
         where: (t, { eq, and }) => and(eq(t.accountId, account), eq(t.status, true)),
-        columns: { id: true, pendingWebhook: true, lastWebhookSyncedAt: true },
+        columns: { id: true, pendingWebhook: true, lastWebhookSyncStartedAt: true },
       })
 
       if (!connection) continue
@@ -40,7 +40,8 @@ export class DropboxWebhook {
       // Debounce: if the account was synced recently, defer to cron
       const debounceThreshold = new Date(Date.now() - DEBOUNCE_WINDOW_MS)
       const recentlySynced =
-        connection.lastWebhookSyncedAt && connection.lastWebhookSyncedAt >= debounceThreshold
+        connection.lastWebhookSyncStartedAt &&
+        connection.lastWebhookSyncStartedAt >= debounceThreshold
 
       if (recentlySynced) {
         await db
@@ -83,6 +84,17 @@ export class DropboxWebhook {
       and(eq(channelSync.dbxAccountId, accountId), eq(channelSync.status, true)),
     )
 
+    const conditions = and(
+      eq(dropboxConnections.accountId, accountId),
+      eq(dropboxConnections.portalId, connection.portalId),
+    )
+    // Clear pending webhook flag before syncing all channels for this account
+
+    await db
+      .update(dropboxConnections)
+      .set({ pendingWebhook: false, lastWebhookSyncStartedAt: new Date() })
+      .where(conditions)
+
     const dbxClient = new DropboxClient(refreshToken, rootNamespaceId).getDropboxClient()
     for (const channel of channels) {
       const proceed = await this.handleDbxRootPathMove(channel, mapFilesService, dbxClient)
@@ -96,16 +108,8 @@ export class DropboxWebhook {
         ))
     }
 
-    // Clear pending webhook flag after all channels for this account are processed
-    await db
-      .update(dropboxConnections)
-      .set({ pendingWebhook: false, lastWebhookSyncedAt: new Date() })
-      .where(
-        and(
-          eq(dropboxConnections.accountId, accountId),
-          eq(dropboxConnections.portalId, connection.portalId),
-        ),
-      )
+    // update last webhook synced at
+    await db.update(dropboxConnections).set({ lastWebhookSyncedAt: new Date() }).where(conditions)
   }
 
   async getDropboxFileMetadata(filePath: string, dbxClient: Dropbox) {
