@@ -1,5 +1,5 @@
 {
-  "id": "958423be-b57a-492f-b6da-10abc12a8cf3",
+  "id": "21203760-221f-4020-bf52-7d6249e36430",
   "prevId": "782a75df-3185-4302-9333-9ee92f0cde09",
   "version": "7",
   "dialect": "postgresql",
@@ -340,6 +340,12 @@
         },
         "last_webhook_synced_at": {
           "name": "last_webhook_synced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_webhook_sync_started_at": {
+          "name": "last_webhook_sync_started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

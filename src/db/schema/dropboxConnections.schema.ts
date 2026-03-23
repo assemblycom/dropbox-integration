@@ -29,6 +29,9 @@ export const dropboxConnections = pgTable(
     // Timestamp of last completed webhook-triggered sync for this account
     lastWebhookSyncedAt: timestamp({ withTimezone: true, mode: 'date' }),
 
+    // Timestamp of when the last webhook sync started for this account
+    lastWebhookSyncStartedAt: timestamp({ withTimezone: true, mode: 'date' }),
+
     // Copilot internalUserId that initiated the connection
     initiatedBy: uuid().notNull(),
 
