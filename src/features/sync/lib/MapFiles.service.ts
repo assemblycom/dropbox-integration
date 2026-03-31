@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import httpStatus from 'http-status'
-import { ApiError } from 'node_modules/copilot-node-sdk/dist/codegen/api'
 import z from 'zod'
+import { MAX_FETCH_COPILOT_RESOURCES } from '@/constants/limits'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
 import {
@@ -22,7 +22,6 @@ import type {
   MapList,
   WhereClause,
 } from '@/features/sync/types'
-import { copilotBottleneck } from '@/lib/copilot/bottleneck'
 import {
   type CopilotFileList,
   FileChannelMembership,
@@ -421,80 +420,125 @@ export class MapFilesService extends AuthenticatedDropboxService {
 
   async listFormattedChannelMap(): Promise<MapList[]> {
     const channelMaps = await this.getAllChannelMaps()
+    if (channelMaps.length === 0) return []
 
-    const channelMapPromises = []
+    // Batch fetch all file channels in one API call
+    const fileChannels = await this.copilot.listFileChannels({
+      limit: MAX_FETCH_COPILOT_RESOURCES,
+    })
+    const fileChannelMap = new Map(fileChannels.map((fc) => [fc.id, fc]))
+
+    // Collect unique company and client IDs from file channels that match our channel maps
+    const companyIds = new Set<string>()
+    const clientIds = new Set<string>()
+    const staleChannelMapIds: string[] = []
+
     for (const channelMap of channelMaps) {
-      channelMapPromises.push(
-        copilotBottleneck.schedule(() => {
-          return this.formatChannelMap(channelMap)
+      const fc = fileChannelMap.get(channelMap.assemblyChannelId)
+      if (!fc) {
+        staleChannelMapIds.push(channelMap.id)
+        continue
+      }
+      if (fc.companyId) companyIds.add(fc.companyId)
+      if (fc.clientId) clientIds.add(fc.clientId)
+    }
+
+    // Batch fetch all companies and clients in parallel (2 API calls total)
+    const [companiesResponse, clientsResponse] = await Promise.all([
+      companyIds.size > 0
+        ? this.copilot.getCompanies({ limit: MAX_FETCH_COPILOT_RESOURCES })
+        : Promise.resolve({ data: [] }),
+      clientIds.size > 0
+        ? this.copilot.getClients({ limit: MAX_FETCH_COPILOT_RESOURCES })
+        : Promise.resolve({ data: [] }),
+    ])
+
+    const companyMap = new Map((companiesResponse.data ?? []).map((c) => [c.id, c]))
+    const clientMap = new Map((clientsResponse.data ?? []).map((c) => [c.id, c]))
+
+    // Soft-delete stale channel maps in parallel
+    if (staleChannelMapIds.length > 0) {
+      await Promise.all(
+        staleChannelMapIds.map((id) => {
+          console.info('Soft delete channel map and make it inactive', id)
+          return this.deleteChannelMapById(id)
         }),
       )
     }
 
-    return (await Promise.all(channelMapPromises)).filter((channelMap) => !!channelMap)
+    // Format all channel maps locally using pre-fetched data
+    const results: MapList[] = []
+    for (const channelMap of channelMaps) {
+      const formatted = this.formatChannelMapFromCache(
+        channelMap,
+        fileChannelMap,
+        companyMap,
+        clientMap,
+      )
+      if (formatted) results.push(formatted)
+    }
+
+    return results
   }
 
-  async formatChannelMap(channelMap: ChannelSyncSelectType): Promise<MapList | null> {
-    logger.info('MapFilesService#formatChannelMap :: Formatting channel map', channelMap)
+  private formatChannelMapFromCache(
+    channelMap: ChannelSyncSelectType,
+    fileChannelMap: Map<
+      string,
+      { id: string; membershipType: string; companyId?: string; clientId?: string }
+    >,
+    companyMap: Map<string, { id: string }>,
+    clientMap: Map<string, { id: string }>,
+  ): MapList | null {
+    const fileChannel = fileChannelMap.get(channelMap.assemblyChannelId)
+    if (!fileChannel) return null
 
-    try {
-      let fileChannelValue: UserCompanySelectorInputValue[]
-      const fileChannel = await this.copilot.retrieveFileChannel(channelMap.assemblyChannelId)
+    let fileChannelValue: UserCompanySelectorInputValue[]
 
-      if (fileChannel.membershipType === FileChannelMembership.COMPANY) {
-        if (!fileChannel.companyId) {
-          console.error('Company id not found')
-          return null
-        }
-        const companyDetails = await this.copilot.getCompany(fileChannel.companyId)
-        fileChannelValue = [
-          {
-            id: companyDetails.id,
-            companyId: companyDetails.id,
-            object: 'company' as const,
-          },
-        ]
-      } else {
-        if (!fileChannel.clientId) {
-          console.error('Client id not found')
-          return null
-        }
-        const clientDetails = await this.copilot.getClient(fileChannel.clientId)
-        fileChannelValue = [
-          {
-            id: clientDetails.id,
-            companyId: z.string().parse(fileChannel.companyId),
-            object: 'client' as const,
-          },
-        ]
+    if (fileChannel.membershipType === FileChannelMembership.COMPANY) {
+      if (!fileChannel.companyId) {
+        console.error('Company id not found')
+        return null
       }
-
-      // calculate synced percentage.
-      const syncedPercentage = this.getSyncedPercentage(
-        channelMap.status,
-        channelMap.syncedFilesCount,
-        channelMap.totalFilesCount,
-      )
-
-      const formattedChannelInfo = {
-        id: channelMap.id,
-        fileChannelValue,
-        dbxRootPath: channelMap.dbxRootPath,
-        status: channelMap.status,
-        fileChannelId: fileChannel.id,
-        lastSyncedAt: channelMap.lastSyncedAt,
-        syncedPercentage,
+      const company = companyMap.get(fileChannel.companyId)
+      if (!company) {
+        console.error('Company not found in batch response', fileChannel.companyId)
+        return null
       }
-      logger.info('MapFilesService#formatChannelMap :: Formatted channel map', formattedChannelInfo)
-
-      return formattedChannelInfo
-    } catch (error: unknown) {
-      if (error instanceof ApiError && error.status === httpStatus.BAD_REQUEST) {
-        console.info('Soft delete channel map and make it inactive')
-        await this.deleteChannelMapById(channelMap.id)
+      fileChannelValue = [{ id: company.id, companyId: company.id, object: 'company' as const }]
+    } else {
+      if (!fileChannel.clientId) {
+        console.error('Client id not found')
+        return null
       }
-      logger.error('MapFilesService#formatChannelMap :: Error formatting channel map', error)
-      return null
+      const client = clientMap.get(fileChannel.clientId)
+      if (!client) {
+        console.error('Client not found in batch response', fileChannel.clientId)
+        return null
+      }
+      fileChannelValue = [
+        {
+          id: client.id,
+          companyId: z.string().parse(fileChannel.companyId),
+          object: 'client' as const,
+        },
+      ]
+    }
+
+    const syncedPercentage = this.getSyncedPercentage(
+      channelMap.status,
+      channelMap.syncedFilesCount,
+      channelMap.totalFilesCount,
+    )
+
+    return {
+      id: channelMap.id,
+      fileChannelValue,
+      dbxRootPath: channelMap.dbxRootPath,
+      status: channelMap.status,
+      fileChannelId: fileChannel.id,
+      lastSyncedAt: channelMap.lastSyncedAt,
+      syncedPercentage,
     }
   }
 

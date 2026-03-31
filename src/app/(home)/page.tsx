@@ -29,22 +29,24 @@ const Home = async ({ searchParams }: PageProps) => {
   const connection = await dpxConnectionService.getConnectionForWorkspace()
 
   const userService = new UserService(user)
-  const users = await userService.getSelectorClientsCompanies()
-  const workspace = await getWorkspace(token)
-  let mapList: MapList[] = [],
-    tempMapList: MapList[] = []
 
-  if (connection.refreshToken && connection.accountId) {
-    const connectionToken = {
-      refreshToken: connection.refreshToken,
-      accountId: connection.accountId,
-      rootNamespaceId: connection.rootNamespaceId,
-    }
+  // Fetch user data, workspace, and channel maps in parallel
+  const mapListPromise =
+    connection.refreshToken && connection.accountId
+      ? new MapFilesService(user, {
+          refreshToken: connection.refreshToken,
+          accountId: connection.accountId,
+          rootNamespaceId: connection.rootNamespaceId,
+        }).listFormattedChannelMap()
+      : Promise.resolve([] as MapList[])
 
-    const mapService = new MapFilesService(user, connectionToken)
-    mapList = await mapService.listFormattedChannelMap()
-    tempMapList = structuredClone(mapList)
-  }
+  const [users, workspace, mapList] = await Promise.all([
+    userService.getSelectorClientsCompanies(),
+    getWorkspace(token),
+    mapListPromise,
+  ])
+
+  const tempMapList = structuredClone(mapList)
 
   return (
     <AuthContextProvider user={clientUser} connectionStatus={connection.status}>
