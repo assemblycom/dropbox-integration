@@ -444,6 +444,6 @@ export class SyncService extends AuthenticatedDropboxService {
   }
 
   async removeChannelSyncMapping(channelSyncId: string) {
-    await this.mapFilesService.deleteChannelMapById(channelSyncId)
+    await this.mapFilesService.deleteChannelMapsByIds([channelSyncId])
   }
 }
