@@ -69,6 +69,10 @@ export default defineConfig({
   onFailure: ({ payload, error, ctx }) => {
     console.error({ payload, error, ctx })
     Sentry.captureException(error, {
+      tags: {
+        taskId: ctx.task.id,
+        attemptNumber: ctx.attempt.number,
+      },
       extra: {
         payload,
         ctx,
