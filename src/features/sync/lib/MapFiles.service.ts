@@ -1,6 +1,5 @@
 import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import httpStatus from 'http-status'
-import { ApiError } from 'node_modules/copilot-node-sdk/dist/codegen/api'
 import z from 'zod'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
@@ -30,6 +29,7 @@ import {
 } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
 import logger from '@/lib/logger'
+import { isAssemblyApiError } from '@/utils/assemblyError'
 
 export class MapFilesService extends AuthenticatedDropboxService {
   async getSingleFileMap(where: WhereClause): Promise<FileSyncSelectType | undefined> {
@@ -489,7 +489,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
 
       return formattedChannelInfo
     } catch (error: unknown) {
-      if (error instanceof ApiError && error.status === httpStatus.BAD_REQUEST) {
+      if (isAssemblyApiError(error) && error.status === httpStatus.BAD_REQUEST) {
         console.info('Soft delete channel map and make it inactive')
         await this.deleteChannelMapById(channelMap.id)
       }

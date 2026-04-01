@@ -1,7 +1,6 @@
 import 'server-only'
 
-import type { CopilotAPI as SDK } from 'copilot-node-sdk'
-import { copilotApi } from 'copilot-node-sdk'
+import { assemblyApi, type AssemblyAPI as SDK } from '@assembly-js/node-sdk'
 import fetch from 'node-fetch'
 import z from 'zod'
 import env from '@/config/server.env'
@@ -54,7 +53,7 @@ export class CopilotAPI {
     private readonly token: string,
     readonly customApiKey?: string,
   ) {
-    this.copilot = copilotApi({
+    this.copilot = assemblyApi({
       apiKey: customApiKey ?? env.COPILOT_API_KEY,
       token,
     })

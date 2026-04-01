@@ -19,13 +19,13 @@
     "supabase:dev": "supabase start --ignore-health-check"
   },
   "dependencies": {
+    "@assembly-js/node-sdk": "^3.19.1",
     "@sentry/nextjs": "^10",
     "@trigger.dev/sdk": "4.0.6",
     "bottleneck": "^2.19.5",
     "camelcase-keys": "^10.0.1",
     "clsx": "^2.1.1",
     "copilot-design-system": "^2.2.6",
-    "copilot-node-sdk": "^3.16.0",
     "dayjs": "^1.11.19",
     "dotenv": "^17.2.1",
     "drizzle-orm": "^0.44.5",

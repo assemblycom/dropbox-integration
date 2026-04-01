@@ -1,7 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { DropboxResponseError } from 'dropbox'
 import httpStatus from 'http-status'
-import { ApiError as CopilotApiError } from 'node_modules/copilot-node-sdk/dist/codegen/api'
 import fetch from 'node-fetch'
 import z from 'zod'
 import { ObjectType, type ObjectTypeValue } from '@/db/constants'
@@ -23,6 +22,7 @@ import type { CopilotFileRetrieve } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
 import logger from '@/lib/logger'
 import { bidirectionalMasterSync } from '@/trigger/processFileSync'
+import { isAssemblyApiError } from '@/utils/assemblyError'
 import { appendDateTimeToFilePath, buildPathArray, getPathFromRoot } from '@/utils/filePath'
 
 export class SyncService extends AuthenticatedDropboxService {
@@ -187,8 +187,8 @@ export class SyncService extends AuthenticatedDropboxService {
       await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
     } catch (error: unknown) {
       if (
-        error instanceof CopilotApiError &&
-        error.status === 400 &&
+        isAssemblyApiError(error) &&
+        error.status === httpStatus.BAD_REQUEST &&
         error.body.message === 'Folder already exists'
       ) {
         console.info({ message: error.body.message, path: itemPath })
