@@ -40,6 +40,14 @@ type HandleChannelFilePayload = {
 
 const machine = env.TRIGGER_MACHINE
 
+const RETRY_CONFIG = {
+  maxAttempts: 3,
+  minTimeoutInMs: 120_000, // 2 minutes
+  maxTimeoutInMs: 300_000, // 5 minutes
+  factor: 2,
+  randomize: true,
+} as const
+
 export const processDropboxChanges = task({
   id: 'process-dropbox-changes',
   machine,
@@ -59,20 +67,24 @@ export const processDropboxChanges = task({
 export const bidirectionalMasterSync = task({
   id: 'bidirectional-master-sync',
   machine,
+  retry: {
+    maxAttempts: 0,
+  },
   run: async (payload: SyncTaskPayload) => {
-    try {
-      await initiateAssemblyToDropboxSync.triggerAndWait(payload)
-      logger.info('\n\n Synced Assembly files to Dropbox \n\n')
-      await initiateDropboxToAssemblySync.triggerAndWait(payload)
-    } catch (error: unknown) {
-      logger.error('processFileSync#bidirectionalMasterSync', { error })
-    }
+    await initiateAssemblyToDropboxSync.triggerAndWait(payload)
+    logger.info('Synced Assembly files to Dropbox')
+
+    await initiateDropboxToAssemblySync.triggerAndWait(payload)
+    logger.info('Synced Dropbox files to Assembly')
   },
 })
 
 export const initiateDropboxToAssemblySync = task({
   id: 'initiate-dropbox-to-assembly-sync',
   machine,
+  retry: {
+    maxAttempts: 0,
+  },
   run: async (payload: SyncTaskPayload) => {
     logger.info(
       'processFileSync#initiateDropboxToAssemblySync. Syncing files from Dropbox to Assembly',
@@ -154,9 +166,7 @@ export const syncDropboxFileToAssembly = task({
     name: 'sync-dropbox-file-to-assembly',
     concurrencyLimit: 25,
   },
-  retry: {
-    maxAttempts: 3,
-  },
+  retry: RETRY_CONFIG,
   run: (payload: DropboxToAssemblySyncFilesPayload) => {
     logger.info('processFileSync#syncDropboxFileToAssembly')
     return withErrorLogging<DropboxToAssemblySyncFilesPayload>(payload, async () => {
@@ -283,9 +293,7 @@ export const deleteDropboxFileInAssembly = task({
     name: 'delete-dropbox-file-in-assembly',
     concurrencyLimit: 1,
   },
-  retry: {
-    maxAttempts: 3,
-  },
+  retry: RETRY_CONFIG,
   run: async (payload: DropboxToAssemblySyncFilesPayload) => {
     const { opts, entry } = payload
     const { channelSyncId, user, connectionToken, dbxRootPath } = opts
@@ -300,9 +308,7 @@ export const updateDropboxFileInAssembly = task({
     name: 'update-dropbox-file-in-assembly',
     concurrencyLimit: 5,
   },
-  retry: {
-    maxAttempts: 3,
-  },
+  retry: RETRY_CONFIG,
   run: async (payload: DropboxToAssemblySyncFilesPayload) => {
     await deleteDropboxFileInAssembly.triggerAndWait(payload)
     await syncDropboxFileToAssembly.trigger(payload)
@@ -312,6 +318,9 @@ export const updateDropboxFileInAssembly = task({
 export const initiateAssemblyToDropboxSync = task({
   id: 'initiate-assembly-to-dropbox-sync',
   machine,
+  retry: {
+    maxAttempts: 0,
+  },
   run: async (payload: SyncTaskPayload) => {
     logger.info(
       'processFileSync#initiateAssemblyToDropboxSync. Syncing files from Assembly to Dropbox',
@@ -356,9 +365,7 @@ export const syncAssemblyFileToDropbox = task({
     name: 'sync-assembly-file-to-dropbox',
     concurrencyLimit: 25,
   },
-  retry: {
-    maxAttempts: 3,
-  },
+  retry: RETRY_CONFIG,
   run: (payload: AssemblyToDropboxSyncFilesPayload) => {
     logger.info('processFileSync#syncAssemblyFileToDropbox')
     return withErrorLogging<AssemblyToDropboxSyncFilesPayload>(payload, async () => {
