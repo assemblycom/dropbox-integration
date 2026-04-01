@@ -40,6 +40,17 @@ type HandleChannelFilePayload = {
 
 const machine = env.TRIGGER_MACHINE
 
+/**
+ * Retry config for per-file sync tasks (e.g., syncDropboxFileToAssembly, deleteDropboxFileInAssembly).
+ * Delays retries to give the DB time to recover from transient failures (connection issues, timeouts).
+ *
+ * - maxAttempts: Number of retry attempts after the initial failure.
+ * - minTimeoutInMs: Initial wait before the first retry (2 min).
+ * - maxTimeoutInMs: Upper cap on retry delay (5 min).
+ * - factor: Exponential backoff multiplier. Each retry waits factor × previous delay
+ *   (e.g., 2 min → 4 min → 5 min capped).
+ * - randomize: Adds jitter (±50%) to prevent multiple failed tasks from retrying simultaneously.
+ */
 const RETRY_CONFIG = {
   maxAttempts: 3,
   minTimeoutInMs: 120_000, // 2 minutes
