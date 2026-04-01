@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import httpStatus from 'http-status'
 import z from 'zod'
 import { MAX_FETCH_COPILOT_RESOURCES } from '@/constants/limits'
@@ -277,8 +277,10 @@ export class MapFilesService extends AuthenticatedDropboxService {
       .where(eq(channelSync.id, id))
   }
 
-  async deleteChannelMapById(id: string) {
-    logger.info('MapFilesService#deleteChannelMapById :: Deleting channel map', id)
+  async deleteChannelMapsByIds(ids: string[]) {
+    if (ids.length === 0) return
+
+    logger.info('MapFilesService#deleteChannelMapsByIds :: Deleting channel maps', ids)
 
     await db.transaction(async (tx) => {
       const deletedAt = new Date()
@@ -288,17 +290,17 @@ export class MapFilesService extends AuthenticatedDropboxService {
           deletedAt,
           status: false,
         })
-        .where(eq(channelSync.id, id))
+        .where(inArray(channelSync.id, ids))
 
       await tx
         .update(fileFolderSync)
         .set({
           deletedAt,
         })
-        .where(eq(fileFolderSync.channelSyncId, id))
+        .where(inArray(fileFolderSync.channelSyncId, ids))
     })
 
-    logger.info('MapFilesService#deleteChannelMapById :: Deleted channel map', id)
+    logger.info('MapFilesService#deleteChannelMapsByIds :: Deleted channel maps', ids)
   }
 
   async getAllChannelMaps(where?: WhereClause): Promise<ChannelSyncSelectType[]> {
@@ -456,14 +458,10 @@ export class MapFilesService extends AuthenticatedDropboxService {
     const companyMap = new Map((companiesResponse.data ?? []).map((c) => [c.id, c]))
     const clientMap = new Map((clientsResponse.data ?? []).map((c) => [c.id, c]))
 
-    // Soft-delete stale channel maps in parallel
+    // Bulk soft-delete stale channel maps
     if (staleChannelMapIds.length > 0) {
-      await Promise.all(
-        staleChannelMapIds.map((id) => {
-          console.info('Soft delete channel map and make it inactive', id)
-          return this.deleteChannelMapById(id)
-        }),
-      )
+      console.info('Soft delete channel maps and make them inactive: ', staleChannelMapIds)
+      await this.deleteChannelMapsByIds(staleChannelMapIds)
     }
 
     // Format all channel maps locally using pre-fetched data
