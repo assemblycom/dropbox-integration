@@ -108,11 +108,18 @@ export class DropboxClient {
     urlPath,
     filePath,
     rootNamespaceId,
+    refreshToken,
   }: {
     urlPath: string
     filePath: string
     rootNamespaceId: string
-  }) {
+    refreshToken: string
+  }): Promise<{ body: NodeJS.ReadableStream | null; contentLength: string }> {
+    // Ensure a valid access token before the download. The DropboxAuth instance
+    // is created per-task with only the refresh token set; without an explicit
+    // refresh here, `getAccessToken()` returns undefined and Dropbox 400s.
+    await this.dbxAuthClient.refreshAccessToken(refreshToken)
+
     const headers = {
       Authorization: `Bearer ${this.dbxAuthClient.authInstance.getAccessToken()}`,
       'Dropbox-API-Path-Root': dropboxArgHeader({
@@ -126,7 +133,19 @@ export class DropboxClient {
       throw new DropboxResponseError(response.status, response.headers, {
         error_summary: 'DropboxClient#downloadFile. Failed to download file', // following the dropbox response error convention with snake case
       })
-    return response.body
+
+    // Use the Content-Length from the download response as the upload size.
+    // This is the exact byte count about to be streamed, guaranteed to match
+    // what the upstream (S3) sees — unlike the size in `filesListFolder` entries,
+    // which can diverge from the downloaded stream for certain file types.
+    const contentLength = response.headers.get('content-length')
+    if (!contentLength) {
+      throw new Error(
+        `DropboxClient#downloadFile. Missing Content-Length header for file: ${filePath}`,
+      )
+    }
+
+    return { body: response.body, contentLength }
   }
 
   /**

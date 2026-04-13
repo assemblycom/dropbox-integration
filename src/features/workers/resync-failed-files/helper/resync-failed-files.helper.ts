@@ -88,7 +88,9 @@ const processFailedSync = async (
   if (file && file.status !== 'pending') return
 
   const fileInDropbox = await getFileFromDropbox(dbxClient, failedSync.dbxFileId ?? '')
-  if (!fileInDropbox) return
+  // Guard against non-file entries: a mapped dbxFileId could resolve to a folder
+  // or deleted entry after a Dropbox rename/delete-and-recreate. Only resync files.
+  if (!fileInDropbox || fileInDropbox['.tag'] !== 'file') return
 
   const channelSync = await db.query.channelSync.findFirst({
     where: (channelSync, { eq }) => eq(channelSync.id, failedSync.channelSyncId),

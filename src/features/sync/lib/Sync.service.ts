@@ -268,23 +268,20 @@ export class SyncService extends AuthenticatedDropboxService {
   private async uploadFileInAssembly(dbxPath: string, uploadUrl: string, copilotApi: CopilotAPI) {
     logger.info('SyncService#uploadFileInAssembly :: Uploading file to Assembly', dbxPath)
 
-    const dbx = this.dbxClient.getDropboxClient()
-    const fileMetaData = await dbx.filesDownload({ path: dbxPath }) // get metadata for the files
-    logger.info('SyncService#uploadFileInAssembly :: File metadata downloaded', dbxPath)
-
-    const downloadBody = await this.dbxClient.downloadFile({
+    // Stream the file directly from Dropbox into Assembly's S3 upload URL.
+    // `contentLength` comes from the download response headers, guaranteeing it
+    // matches the exact bytes in the stream. Avoids the Dropbox SDK's
+    // `filesDownload` which buffers the full file in memory (OOMs on videos).
+    const { body: downloadBody, contentLength } = await this.dbxClient.downloadFile({
       urlPath: DBX_URL_PATH.fileDownload,
       filePath: dbxPath,
       rootNamespaceId: z.string().parse(this.connectionToken.rootNamespaceId),
+      refreshToken: this.connectionToken.refreshToken,
     })
     logger.info('SyncService#uploadFileInAssembly :: Found downloadBody', Boolean(downloadBody))
 
     // upload file to assembly
-    const fileUploadResp = await copilotApi.uploadFile(
-      uploadUrl,
-      fileMetaData.result.size.toString(),
-      downloadBody,
-    )
+    const fileUploadResp = await copilotApi.uploadFile(uploadUrl, contentLength, downloadBody)
     logger.info('SyncService#uploadFileInAssembly :: File uploaded to Assembly', dbxPath)
 
     if (fileUploadResp.status !== httpStatus.OK) {
