@@ -427,6 +427,7 @@ export class SyncService extends AuthenticatedDropboxService {
         filePath: path,
         body: resp.body,
         rootNamespaceId: z.string().parse(this.connectionToken.rootNamespaceId),
+        refreshToken: this.connectionToken.refreshToken,
       })
       logger.info('SyncService#uploadFileInDropbox :: File uploaded to', path)
       return {

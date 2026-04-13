@@ -157,12 +157,20 @@ export class DropboxClient {
     filePath,
     body,
     rootNamespaceId,
+    refreshToken,
   }: {
     urlPath: string
     filePath: string
     body: NodeJS.ReadableStream | null
     rootNamespaceId: string
+    refreshToken: string
   }): Promise<DropboxFileMetadata> {
+    // Explicit token refresh — mirrors `_downloadFile`. Previously relied on
+    // an implicit refresh from a preceding SDK call (e.g. filesGetMetadata),
+    // which is a fragile contract — any future caller reaching this method
+    // without a prior SDK call would 400 on an unpopulated Bearer.
+    await this.dbxAuthClient.refreshAccessToken(refreshToken)
+
     const args = {
       path: filePath,
       autorename: false,
