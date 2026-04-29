@@ -17,6 +17,7 @@ import { generateToken } from '@/lib/copilot/generateToken'
 import User from '@/lib/copilot/models/User.model'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import logger from '@/lib/logger'
+import { withRetry } from '@/lib/withRetry'
 import { handleChannelFileChanges, processDropboxChanges } from '@/trigger/processFileSync'
 
 const DEBOUNCE_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
@@ -112,9 +113,11 @@ export class DropboxWebhook {
     await db.update(dropboxConnections).set({ lastWebhookSyncedAt: new Date() }).where(conditions)
   }
 
+  // Refactor below code. Move the function to DropboxClient file and call it from here.
   async getDropboxFileMetadata(filePath: string, dbxClient: Dropbox) {
-    return await dbxClient.filesGetMetadata({
-      path: filePath,
+    return await withRetry((path: string) => dbxClient.filesGetMetadata({ path }), [filePath], {
+      minTimeout: 3000,
+      maxTimeout: 12000,
     })
   }
 
