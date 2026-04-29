@@ -7,6 +7,14 @@ import pRetry from 'p-retry'
 import type { StatusableError } from '@/errors/BaseServerError'
 import { sleep } from '@/utils/sleep'
 
+const RETRYABLE_STATUS_CODES = new Set<number>([
+  httpStatus.TOO_MANY_REQUESTS,
+  httpStatus.INTERNAL_SERVER_ERROR,
+  httpStatus.BAD_GATEWAY,
+  httpStatus.SERVICE_UNAVAILABLE,
+  httpStatus.GATEWAY_TIMEOUT,
+])
+
 export const withRetry = async <Args extends unknown[], R>(
   fn: (...args: Args) => Promise<R>,
   args: Args,
@@ -63,18 +71,8 @@ export const withRetry = async <Args extends unknown[], R>(
 
       onFailedAttempt: (error: { error: unknown; attemptNumber: number; retriesLeft: number }) => {
         if (error.error instanceof DropboxResponseError) {
-          const errorStatus = error.error.status
-          if (
-            errorStatus !== httpStatus.TOO_MANY_REQUESTS &&
-            errorStatus !== httpStatus.INTERNAL_SERVER_ERROR
-          )
-            return
-        }
-
-        if (
-          (error.error as StatusableError).status !== httpStatus.TOO_MANY_REQUESTS &&
-          (error.error as StatusableError).status !== httpStatus.INTERNAL_SERVER_ERROR
-        ) {
+          if (!RETRYABLE_STATUS_CODES.has(error.error.status)) return
+        } else if (!RETRYABLE_STATUS_CODES.has((error.error as StatusableError).status)) {
           return
         }
         console.warn(
@@ -84,21 +82,11 @@ export const withRetry = async <Args extends unknown[], R>(
       },
       shouldRetry: (error: { error: unknown; attemptNumber: number; retriesLeft: number }) => {
         if (error.error instanceof DropboxResponseError) {
-          const errorStatus = error.error.status
-          return (
-            errorStatus === httpStatus.TOO_MANY_REQUESTS ||
-            errorStatus === httpStatus.INTERNAL_SERVER_ERROR
-          )
+          return RETRYABLE_STATUS_CODES.has(error.error.status)
         }
 
         // Typecasting because Copilot doesn't export an error class
-        const err = error.error as StatusableError
-
-        // Retry only if statusCode indicates a ratelimit or Internal Server Error
-        return (
-          err.status === httpStatus.TOO_MANY_REQUESTS ||
-          err.status === httpStatus.INTERNAL_SERVER_ERROR
-        )
+        return RETRYABLE_STATUS_CODES.has((error.error as StatusableError).status)
       },
     },
   )
