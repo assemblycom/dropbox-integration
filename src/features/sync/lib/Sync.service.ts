@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm'
-import { DropboxResponseError } from 'dropbox'
+import { DropboxResponseError, type files as dropboxFiles } from 'dropbox'
 import httpStatus from 'http-status'
 import fetch from 'node-fetch'
 import z from 'zod'
@@ -359,68 +359,80 @@ export class SyncService extends AuthenticatedDropboxService {
     const dbxFilePath = `${dbxRootPath}/${file.path}`
     logger.info('SyncService#createAndUploadFileInDropbox :: Found dbxFilePath', dbxFilePath)
 
-    // create file/folder
+    // 1. check if the file/folder exists. The try/catch is narrowed to JUST
+    // this SDK call: a 409/not_found here means "doesn't exist yet, create
+    // it". Wrapping the rename-then-reupload path below would misroute its
+    // own 409s (e.g. parent folder missing during upload) into the create
+    // branch and double-fire uploadFileInDropbox.
+    let existing:
+      | dropboxFiles.FileMetadataReference
+      | dropboxFiles.FolderMetadataReference
+      | dropboxFiles.DeletedMetadataReference
+      | undefined
     try {
-      // 1. check if the file/folder exists
-      const dbxResponse = await dbxClient.filesGetMetadata({
-        path: dbxFilePath,
-      })
-      // 1.1 if folder exists, simply return the folder id
-      if (dbxResponse.result['.tag'] === ObjectType.FOLDER) {
-        logger.info('SyncService#createAndUploadFileInDropbox :: Folder exists', dbxFilePath)
-        return { dbxFileId: dbxResponse.result.id }
-      } else if (dbxResponse.result['.tag'] === ObjectType.FILE) {
-        // 1.2 if file exists, rename the existing file in Dropbox and create a new file
-        const newFilePath = appendDateTimeToFilePath(dbxFilePath)
-        logger.info(
-          'SyncService#createAndUploadFileInDropbox :: Renaming file',
-          dbxFilePath,
-          newFilePath,
-        )
-
-        await dbxClient.filesMoveV2({
-          from_path: dbxFilePath,
-          to_path: newFilePath,
-        })
-
-        return await this.uploadFileInDropbox(file, dbxFilePath)
-      }
-      console.info(
-        `SyncService#createAndUploadFileInDropbox. File exists but didn't received required file tag. Type: ${dbxResponse.result['.tag']}. Channel ID: ${file.channelId}`,
-      )
+      const dbxResponse = await dbxClient.filesGetMetadata({ path: dbxFilePath })
+      existing = dbxResponse.result
     } catch (error: unknown) {
-      // 2. if doesn't exist, create the file/folder.
-      // The catch wraps both the `filesGetMetadata` SDK call (whose 409 body
-      // matches the shape below) and `uploadFileInDropbox` (whose 409 body has
-      // a different shape). Optional chaining keeps non-matching 409s falling
-      // through to the rethrow at the end of the block instead of TypeErroring.
       const dbxError =
         error instanceof DropboxResponseError
           ? (error.error as { error?: { path?: { '.tag'?: string } } } | undefined)
           : undefined
-      if (
+      const isNotFound =
         error instanceof DropboxResponseError &&
         error.status === 409 &&
         dbxError?.error?.path?.['.tag'] === 'not_found'
-      ) {
-        logger.info("SyncService#createAndUploadFileInDropbox :: File doesn't exist", dbxFilePath)
-        if (fileType === ObjectType.FOLDER) {
-          const folderCreateResponse = await dbxClient.filesCreateFolderV2({
-            path: dbxFilePath,
-          })
-          logger.info('SyncService#createAndUploadFileInDropbox :: Folder created', dbxFilePath)
-          return { dbxFileId: folderCreateResponse.result.metadata.id }
-        } else if (fileType === ObjectType.FILE) {
-          logger.info('SyncService#createAndUploadFileInDropbox :: File created', dbxFilePath)
-          return await this.uploadFileInDropbox(file, dbxFilePath)
-        }
-        console.info(
-          `SyncService#createAndUploadFileInDropbox. File type out of bound. Type: ${fileType}. Channel ID: ${file.channelId}`,
-        )
+      if (!isNotFound) {
+        console.error(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
+        throw error
       }
-      console.error(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
-      throw error
     }
+
+    // 1.1 if folder exists, simply return the folder id
+    if (existing?.['.tag'] === ObjectType.FOLDER) {
+      logger.info('SyncService#createAndUploadFileInDropbox :: Folder exists', dbxFilePath)
+      return { dbxFileId: existing.id }
+    }
+
+    // 1.2 if file exists, rename the existing file in Dropbox and re-upload
+    if (existing?.['.tag'] === ObjectType.FILE) {
+      const newFilePath = appendDateTimeToFilePath(dbxFilePath)
+      logger.info(
+        'SyncService#createAndUploadFileInDropbox :: Renaming file',
+        dbxFilePath,
+        newFilePath,
+      )
+
+      await dbxClient.filesMoveV2({
+        from_path: dbxFilePath,
+        to_path: newFilePath,
+      })
+
+      return await this.uploadFileInDropbox(file, dbxFilePath)
+    }
+
+    if (existing) {
+      console.info(
+        `SyncService#createAndUploadFileInDropbox. File exists but didn't received required file tag. Type: ${existing['.tag']}. Channel ID: ${file.channelId}`,
+      )
+      return
+    }
+
+    // 2. file doesn't exist, create the file/folder
+    logger.info("SyncService#createAndUploadFileInDropbox :: File doesn't exist", dbxFilePath)
+    if (fileType === ObjectType.FOLDER) {
+      const folderCreateResponse = await dbxClient.filesCreateFolderV2({
+        path: dbxFilePath,
+      })
+      logger.info('SyncService#createAndUploadFileInDropbox :: Folder created', dbxFilePath)
+      return { dbxFileId: folderCreateResponse.result.metadata.id }
+    }
+    if (fileType === ObjectType.FILE) {
+      logger.info('SyncService#createAndUploadFileInDropbox :: File created', dbxFilePath)
+      return await this.uploadFileInDropbox(file, dbxFilePath)
+    }
+    console.info(
+      `SyncService#createAndUploadFileInDropbox. File type out of bound. Type: ${fileType}. Channel ID: ${file.channelId}`,
+    )
   }
 
   private async uploadFileInDropbox(file: CopilotFileRetrieve, path: string) {

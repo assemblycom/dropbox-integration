@@ -51,10 +51,12 @@ import { sanitizeFileNameForAssembly } from '@/utils/filePath'
 // `copilot-node-sdk/dist/codegen/api/core/ApiError`). The class itself is not
 // re-exported from the package's public entry point, so we identify it by
 // shape instead of `instanceof` — that avoids reaching into `node_modules`
-// internals, which would break on any minor SDK update. The `statusText`
-// check narrows the guard to the SDK's specific shape; other thrown errors
-// in this codebase carry `status` but not `statusText`.
+// internals, which would break on any minor SDK update. We check `url` +
+// `statusText` + `body` together (all three sit on the SDK's `ApiError`
+// class) so the guard can't accidentally match unrelated Error subclasses
+// that happen to carry `status` (e.g. DropboxResponseError, our own APIError).
 export type CopilotApiError = Error & {
+  url: string
   status: number
   statusText: string
   body: { message?: string } & Record<string, unknown>
@@ -62,8 +64,14 @@ export type CopilotApiError = Error & {
 
 export function isCopilotApiError(error: unknown): error is CopilotApiError {
   if (!(error instanceof Error)) return false
-  const e = error as { status?: unknown; statusText?: unknown; body?: unknown }
+  const e = error as {
+    url?: unknown
+    status?: unknown
+    statusText?: unknown
+    body?: unknown
+  }
   return (
+    typeof e.url === 'string' &&
     typeof e.status === 'number' &&
     typeof e.statusText === 'string' &&
     typeof e.body === 'object' &&
