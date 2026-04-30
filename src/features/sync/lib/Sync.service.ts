@@ -1,7 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { DropboxResponseError } from 'dropbox'
 import httpStatus from 'http-status'
-import { ApiError as CopilotApiError } from 'node_modules/copilot-node-sdk/dist/codegen/api'
 import fetch from 'node-fetch'
 import z from 'zod'
 import { ObjectType, type ObjectTypeValue } from '@/db/constants'
@@ -17,7 +16,7 @@ import type {
   WhereClause,
 } from '@/features/sync/types'
 import { copilotBottleneck } from '@/lib/copilot/bottleneck'
-import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
+import { CopilotAPI, isCopilotApiError } from '@/lib/copilot/CopilotAPI'
 import type User from '@/lib/copilot/models/User.model'
 import type { CopilotFileRetrieve } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
@@ -187,7 +186,7 @@ export class SyncService extends AuthenticatedDropboxService {
       await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
     } catch (error: unknown) {
       if (
-        error instanceof CopilotApiError &&
+        isCopilotApiError(error) &&
         error.status === 400 &&
         error.body.message === 'Folder already exists'
       ) {
@@ -390,11 +389,19 @@ export class SyncService extends AuthenticatedDropboxService {
         `SyncService#createAndUploadFileInDropbox. File exists but didn't received required file tag. Type: ${dbxResponse.result['.tag']}. Channel ID: ${file.channelId}`,
       )
     } catch (error: unknown) {
-      // 2. if doesn't exist, create the file/folder
+      // 2. if doesn't exist, create the file/folder.
+      // The catch wraps both the `filesGetMetadata` SDK call (whose 409 body
+      // matches the shape below) and `uploadFileInDropbox` (whose 409 body has
+      // a different shape). Optional chaining keeps non-matching 409s falling
+      // through to the rethrow at the end of the block instead of TypeErroring.
+      const dbxError =
+        error instanceof DropboxResponseError
+          ? (error.error as { error?: { path?: { '.tag'?: string } } } | undefined)
+          : undefined
       if (
         error instanceof DropboxResponseError &&
         error.status === 409 &&
-        error.error.error.path['.tag'] === 'not_found'
+        dbxError?.error?.path?.['.tag'] === 'not_found'
       ) {
         logger.info("SyncService#createAndUploadFileInDropbox :: File doesn't exist", dbxFilePath)
         if (fileType === ObjectType.FOLDER) {
