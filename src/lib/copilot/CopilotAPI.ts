@@ -47,6 +47,30 @@ import logger from '@/lib/logger'
 import { withRetry } from '@/lib/withRetry'
 import { sanitizeFileNameForAssembly } from '@/utils/filePath'
 
+// Structural shape of the SDK's `ApiError` (declared in
+// `copilot-node-sdk/dist/codegen/api/core/ApiError`). The class itself is not
+// re-exported from the package's public entry point, so we identify it by
+// shape instead of `instanceof` — that avoids reaching into `node_modules`
+// internals, which would break on any minor SDK update. The `statusText`
+// check narrows the guard to the SDK's specific shape; other thrown errors
+// in this codebase carry `status` but not `statusText`.
+export type CopilotApiError = Error & {
+  status: number
+  statusText: string
+  body: { message?: string } & Record<string, unknown>
+}
+
+export function isCopilotApiError(error: unknown): error is CopilotApiError {
+  if (!(error instanceof Error)) return false
+  const e = error as { status?: unknown; statusText?: unknown; body?: unknown }
+  return (
+    typeof e.status === 'number' &&
+    typeof e.statusText === 'string' &&
+    typeof e.body === 'object' &&
+    e.body !== null
+  )
+}
+
 export class CopilotAPI {
   readonly copilot: SDK
 

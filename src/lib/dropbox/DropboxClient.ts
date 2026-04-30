@@ -1,7 +1,7 @@
 import { Dropbox, type DropboxAuth, DropboxResponseError, type files } from 'dropbox'
 import httpStatus from 'http-status'
 import { camelKeys } from 'js-convert-case'
-import fetch from 'node-fetch'
+import fetch, { type Response as NodeFetchResponse } from 'node-fetch'
 import env from '@/config/server.env'
 import { MAX_FETCH_DBX_RESOURCES } from '@/constants/limits'
 import { DropboxClientType, type DropboxClientTypeValue } from '@/db/constants'
@@ -70,6 +70,32 @@ export class DropboxClient {
     })
   }
 
+  // Dropbox content-endpoint errors carry their reason (e.g. `path/not_found`,
+  // `path/restricted_content`) in the JSON response body, NOT in the headers.
+  // We read it here so the thrown DropboxResponseError exposes the same
+  // `error_summary` / `error` shape the SDK would have produced — without
+  // this, every failure surfaces in Sentry as an opaque "Response failed with
+  // a 4xx code" with no way to triage.
+  private async buildDropboxResponseError(
+    response: NodeFetchResponse,
+    fallbackSummary: string,
+  ): Promise<DropboxResponseError<unknown>> {
+    const rawBody = await response.text().catch(() => '')
+    let parsed: unknown
+    try {
+      parsed = rawBody ? JSON.parse(rawBody) : undefined
+    } catch {
+      parsed = undefined
+    }
+
+    const errorPayload =
+      parsed && typeof parsed === 'object' && 'error_summary' in parsed
+        ? parsed
+        : { error_summary: rawBody || fallbackSummary, error: parsed }
+
+    return new DropboxResponseError(response.status, response.headers, errorPayload)
+  }
+
   async _getAllFilesFolders(
     rootPath: string,
     recursive: boolean = false,
@@ -129,10 +155,12 @@ export class DropboxClient {
       'Dropbox-API-Arg': dropboxArgHeader({ path: filePath }),
     }
     const response = await this.manualFetch(`${env.DROPBOX_API_URL}${urlPath}`, headers)
-    if (response.status !== httpStatus.OK)
-      throw new DropboxResponseError(response.status, response.headers, {
-        error_summary: 'DropboxClient#downloadFile. Failed to download file', // following the dropbox response error convention with snake case
-      })
+    if (response.status !== httpStatus.OK) {
+      throw await this.buildDropboxResponseError(
+        response,
+        `DropboxClient#downloadFile. Failed to download file: ${filePath}`,
+      )
+    }
 
     // Use the Content-Length from the download response as the upload size.
     // This is the exact byte count about to be streamed, guaranteed to match
@@ -188,10 +216,12 @@ export class DropboxClient {
     }
     const response = await this.manualFetch(`${env.DROPBOX_API_URL}${urlPath}`, headers, body)
 
-    if (response.status !== httpStatus.OK)
-      throw new DropboxResponseError(response.status, response.headers, {
-        error_summary: 'DropboxClient#uploadFile. Failed to upload file', // following the dropbox response error convention with snake case
-      })
+    if (response.status !== httpStatus.OK) {
+      throw await this.buildDropboxResponseError(
+        response,
+        `DropboxClient#uploadFile. Failed to upload file: ${filePath}`,
+      )
+    }
     return DropboxFileMetadataSchema.parse(camelKeys(await response.json()))
   }
 
