@@ -64,9 +64,7 @@ export class AssemblyWebhookService extends AuthenticatedDropboxService {
         DISPATCHABLE_HANDLEABLE_EVENT.FolderCreated,
         DISPATCHABLE_HANDLEABLE_EVENT.FolderDeleted,
         DISPATCHABLE_HANDLEABLE_EVENT.FolderUpdated,
-      ].includes(eventType) &&
-      webhookEvent.data.object &&
-      SYNCABLE_OBJECT_TYPES.includes(webhookEvent.data.object) // avoid non-syncable object types like 'link'
+      ].includes(eventType) && SYNCABLE_OBJECT_TYPES.includes(webhookEvent.data.object) // avoid non-syncable object types like 'link'
 
     // if (isValidWebhook) {
     //   const record = await this.checkNonDuplicateWebhookRecord(webhookEvent)
