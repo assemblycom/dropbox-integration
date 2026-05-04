@@ -11,8 +11,12 @@ import logger from '@/lib/logger'
 import { sleep } from '@/utils/sleep'
 
 export const handleWebhookEvent = async (req: NextRequest) => {
-  await sleep(800) // prevent ping-pong case of webhooks
+  // Read the body before any awaits so the upstream connection isn't torn down
+  // (sleep + auth + DB lookup) while we still have an unread request stream.
+  const rawBody = await req.json()
   const token = req.nextUrl.searchParams.get('token')
+
+  await sleep(800) // prevent ping-pong case of webhooks
 
   const user = await User.authenticate(token)
 
@@ -32,7 +36,7 @@ export const handleWebhookEvent = async (req: NextRequest) => {
     accountId: connection.accountId,
     rootNamespaceId: connection.rootNamespaceId,
   })
-  const webhookEvent = await assemblyWebhookService.parseWebhook(req)
+  const webhookEvent = assemblyWebhookService.parseWebhook(rawBody)
   logger.info(`Event triggered. ${JSON.stringify(webhookEvent)}`)
 
   const eventType = assemblyWebhookService.validateHandleableEvent(webhookEvent)

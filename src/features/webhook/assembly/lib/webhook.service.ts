@@ -1,5 +1,4 @@
 import { and, eq } from 'drizzle-orm'
-import type { NextRequest } from 'next/server'
 import z from 'zod'
 import { ObjectType, type ObjectTypeValue } from '@/db/constants'
 import { channelSync } from '@/db/schema/channelSync.schema'
@@ -23,6 +22,8 @@ import {
   updateAssemblyFileInDropbox,
 } from '@/trigger/processFileSync'
 
+const SYNCABLE_OBJECT_TYPES: readonly string[] = [ObjectType.FILE, ObjectType.FOLDER]
+
 export class AssemblyWebhookService extends AuthenticatedDropboxService {
   readonly mapFilesService: MapFilesService
   constructor(user: User, connectionToken: DropboxConnectionTokens) {
@@ -30,8 +31,8 @@ export class AssemblyWebhookService extends AuthenticatedDropboxService {
     this.mapFilesService = new MapFilesService(user, connectionToken)
   }
 
-  async parseWebhook(req: NextRequest): Promise<AssemblyWebhookEvent> {
-    const webhookEvent = AssemblyWebhookSchema.safeParse(await req.json())
+  parseWebhook(body: unknown): AssemblyWebhookEvent {
+    const webhookEvent = AssemblyWebhookSchema.safeParse(body)
     logger.info('AssemblyWebhookService#parseWebhook :: Parsed webhook event', webhookEvent)
     if (!webhookEvent.success) {
       throw new APIError('Failed to parse webhook event')
@@ -63,8 +64,9 @@ export class AssemblyWebhookService extends AuthenticatedDropboxService {
         DISPATCHABLE_HANDLEABLE_EVENT.FolderCreated,
         DISPATCHABLE_HANDLEABLE_EVENT.FolderDeleted,
         DISPATCHABLE_HANDLEABLE_EVENT.FolderUpdated,
-      ].includes(eventType) ||
-      !(webhookEvent.object !== ObjectType.FILE && webhookEvent.object !== ObjectType.FOLDER) // avoid file with object 'link'
+      ].includes(eventType) &&
+      webhookEvent.data.object &&
+      SYNCABLE_OBJECT_TYPES.includes(webhookEvent.data.object) // avoid non-syncable object types like 'link'
 
     // if (isValidWebhook) {
     //   const record = await this.checkNonDuplicateWebhookRecord(webhookEvent)
