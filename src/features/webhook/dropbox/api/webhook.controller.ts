@@ -25,13 +25,13 @@ export const handleWebhookUrlVerification = (req: NextRequest) => {
 }
 
 export const handleWebhookEvents = async (req: NextRequest) => {
-  await sleep(800) // prevent ping-pong case of webhooks
-
   const signature = req.headers.get('X-Dropbox-Signature')
   if (!signature)
     return NextResponse.json({ error: 'Missing signature' }, { status: status.BAD_REQUEST })
 
   const body = await req.text()
+
+  await sleep(800) // prevent ping-pong case of webhooks
 
   const computedSignature = crypto
     .createHmac('sha256', env.DROPBOX_APP_SECRET)

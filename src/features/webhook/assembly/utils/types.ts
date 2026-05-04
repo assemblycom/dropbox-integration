@@ -13,7 +13,6 @@ export enum DISPATCHABLE_HANDLEABLE_EVENT {
 export const AssemblyWebhookSchema = z.object({
   eventType: z.string(),
   created: z.string().optional(),
-  object: z.string().optional(),
   data: CopilotFileRetrieveSchema,
 })
 
