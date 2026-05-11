@@ -73,9 +73,10 @@ export class DropboxClient {
   // Dropbox content-endpoint errors carry their reason (e.g. `path/not_found`,
   // `path/restricted_content`) in the JSON response body, NOT in the headers.
   // We read it here so the thrown DropboxResponseError exposes the same
-  // `error_summary` / `error` shape the SDK would have produced — without
-  // this, every failure surfaces in Sentry as an opaque "Response failed with
-  // a 4xx code" with no way to triage.
+  // `error_summary` / `error` shape the SDK would have produced AND we embed
+  // `error_summary` into `.message` — Sentry uses Error.message for issue
+  // titles, so without the embedding every failure shows up as opaque
+  // "Response failed with a 4xx code" with no way to triage.
   private async buildDropboxResponseError(
     response: NodeFetchResponse,
     fallbackSummary: string,
@@ -93,7 +94,18 @@ export class DropboxClient {
         ? parsed
         : { error_summary: rawBody || fallbackSummary, error: parsed }
 
-    return new DropboxResponseError(response.status, response.headers, errorPayload)
+    const err = new DropboxResponseError(response.status, response.headers, errorPayload)
+    const summary =
+      typeof (errorPayload as { error_summary?: unknown }).error_summary === 'string'
+        ? (errorPayload as { error_summary: string }).error_summary.trim()
+        : ''
+    if (summary) {
+      // DropboxResponseError extends Error at runtime, but its TS type def
+      // doesn't expose `message`; cast through Error to assign it.
+      const asError = err as unknown as Error
+      asError.message = `${asError.message}: ${summary}`
+    }
+    return err
   }
 
   async _getAllFilesFolders(
