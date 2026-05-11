@@ -95,10 +95,11 @@ export class DropboxClient {
         : { error_summary: rawBody || fallbackSummary, error: parsed }
 
     const err = new DropboxResponseError(response.status, response.headers, errorPayload)
-    const summary =
-      typeof (errorPayload as { error_summary?: unknown }).error_summary === 'string'
-        ? (errorPayload as { error_summary: string }).error_summary.trim()
-        : ''
+    const rawSummary = (errorPayload as { error_summary?: unknown }).error_summary
+    // Cap at 200 chars so non-JSON proxy/gateway error bodies (e.g. a 5xx
+    // HTML page from a load balancer) don't blow up the Sentry title. Full
+    // body remains available on `err.error.error_summary` for structured logs.
+    const summary = typeof rawSummary === 'string' ? rawSummary.trim().slice(0, 200) : ''
     if (summary) {
       // DropboxResponseError extends Error at runtime, but its TS type def
       // doesn't expose `message`; cast through Error to assign it.
