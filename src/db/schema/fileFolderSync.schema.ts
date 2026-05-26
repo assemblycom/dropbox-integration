@@ -6,6 +6,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core'
@@ -50,6 +51,12 @@ export const fileFolderSync = pgTable(
       'file_folder_sync_pending_action_target_consistency',
       sql`(${table.pendingAction} IS NULL) = (${table.pendingActionTarget} IS NULL)`,
     ),
+    uniqueIndex('file_folder_sync_portal_channel_assembly_unique')
+      .on(table.portalId, table.channelSyncId, table.assemblyFileId)
+      .where(sql`${table.deletedAt} IS NULL`),
+    uniqueIndex('file_folder_sync_portal_channel_dbx_unique')
+      .on(table.portalId, table.channelSyncId, table.dbxFileId)
+      .where(sql`${table.deletedAt} IS NULL`),
   ],
 )
 
