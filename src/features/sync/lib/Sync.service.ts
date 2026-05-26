@@ -3,7 +3,12 @@ import { DropboxResponseError, type files as dropboxFiles } from 'dropbox'
 import httpStatus from 'http-status'
 import fetch from 'node-fetch'
 import z from 'zod'
-import { ObjectType, type ObjectTypeValue } from '@/db/constants'
+import {
+  ObjectType,
+  type ObjectTypeValue,
+  PendingAction,
+  PendingActionTarget,
+} from '@/db/constants'
 import type { DropboxConnectionTokens } from '@/db/schema/dropboxConnections.schema'
 import { type FileSyncCreateType, fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import APIError from '@/errors/APIError'
@@ -23,6 +28,7 @@ import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.serv
 import logger from '@/lib/logger'
 import { bidirectionalMasterSync } from '@/trigger/processFileSync'
 import { appendDateTimeToFilePath, buildPathArray, getPathFromRoot } from '@/utils/filePath'
+import { normalizeError } from '@/utils/normalizeError'
 
 export class SyncService extends AuthenticatedDropboxService {
   readonly mapFilesService: MapFilesService
@@ -146,8 +152,38 @@ export class SyncService extends AuthenticatedDropboxService {
     const copilotApi = new CopilotAPI(this.user.token)
     const tempFileType = lastItem ? fileObjectType : ObjectType.FOLDER
 
+    const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
+
+    if (isLeafFile) {
+      const pending = await this.mapFilesService.insertCreatePending({
+        channelSyncId,
+        itemPath,
+        object: ObjectType.FILE,
+        target: PendingActionTarget.ASSEMBLY,
+        assemblyFileId: null,
+        dbxFileId: entry.id,
+      })
+
+      if (!pending) {
+        logger.info('createAndUploadFileToAssembly :: race lost, skipping', {
+          channelSyncId,
+          dbxFileId: entry.id,
+          itemPath,
+        })
+        return
+      }
+
+      await this.completePendingAssemblyCreate({
+        pendingRowId: pending.id,
+        itemPath,
+        assemblyChannelId,
+        channelSyncId,
+        entry,
+      })
+      return
+    }
+
     try {
-      // create file/folder
       const fileCreateResponse = await copilotApi.createFile(
         itemPath,
         assemblyChannelId,
@@ -161,28 +197,11 @@ export class SyncService extends AuthenticatedDropboxService {
         portalId: this.user.portalId,
       }
 
-      const mappedFile = await this.mapFilesService.insertFileMap({
+      await this.mapFilesService.insertFileMap({
         ...filePayload,
         dbxFileId: lastItem ? entry.id : null,
       })
 
-      if (fileObjectType === ObjectType.FILE && fileCreateResponse.uploadUrl && lastItem) {
-        await this.uploadFileInAssembly(
-          entry?.path_display,
-          fileCreateResponse.uploadUrl,
-          copilotApi,
-        )
-        await this.mapFilesService.updateFileMap(
-          {
-            contentHash: entry.content_hash,
-          },
-          eq(fileFolderSync.id, mappedFile.id),
-        )
-      }
-
-      console.info(
-        `SyncService#createAndUploadFileToAssembly. Channel ID: ${assemblyChannelId}. File upload success. Type: ${tempFileType}. File ID: ${filePayload.assemblyFileId}. Dbx fileId: ${lastItem ? entry.id : null}`,
-      )
       await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
     } catch (error: unknown) {
       if (
@@ -207,60 +226,131 @@ export class SyncService extends AuthenticatedDropboxService {
     }
   }
 
+  /** Drive a Dropbox→Assembly create against an existing pre-inserted row. Called by both syncDropboxFilesToAssembly's leaf branch and the sweeper's retryCreateInAssembly. */
+  async completePendingAssemblyCreate(params: {
+    pendingRowId: string
+    itemPath: string
+    assemblyChannelId: string
+    channelSyncId: string
+    entry: DropboxFileListFolderSingleEntry
+  }): Promise<void> {
+    const { pendingRowId, itemPath, assemblyChannelId, channelSyncId, entry } = params
+    const copilotApi = new CopilotAPI(this.user.token)
+
+    try {
+      const fileCreateResponse = await copilotApi.createFile(
+        itemPath,
+        assemblyChannelId,
+        ObjectType.FILE,
+      )
+
+      if (fileCreateResponse.uploadUrl) {
+        await this.uploadFileInAssembly(
+          entry.path_display,
+          fileCreateResponse.uploadUrl,
+          copilotApi,
+        )
+      }
+
+      await this.mapFilesService.markUpdated(pendingRowId, {
+        assemblyFileId: fileCreateResponse.id,
+        contentHash: entry.content_hash ?? null,
+      })
+
+      await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+    } catch (error) {
+      await this.mapFilesService.markFailure(pendingRowId, normalizeError(error))
+      throw error
+    }
+  }
+
+  /** Drive an Assembly→Dropbox create against an existing pre-inserted row. Called by both syncAssemblyFilesToDropbox and the sweeper's retryCreateInDropbox. */
+  async completePendingDropboxCreate(params: {
+    pendingRowId: string
+    channelSyncId: string
+    dbxRootPath: string
+    file: CopilotFileRetrieve & { object: ObjectTypeValue }
+  }): Promise<void> {
+    const { pendingRowId, channelSyncId, dbxRootPath, file } = params
+
+    try {
+      const dbxFileInfo = await this.createAndUploadFileInDropbox(dbxRootPath, file.object, file)
+      if (!dbxFileInfo) {
+        throw new Error(
+          `completePendingDropboxCreate: createAndUploadFileInDropbox returned undefined (file=${file.id}, type=${file.object})`,
+        )
+      }
+
+      await this.mapFilesService.markUpdated(pendingRowId, {
+        dbxFileId: dbxFileInfo.dbxFileId,
+        contentHash: dbxFileInfo.contentHash ?? null,
+      })
+
+      await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+    } catch (error) {
+      await this.mapFilesService.markFailure(pendingRowId, normalizeError(error))
+      throw error
+    }
+  }
+
   async removeFileFromAssembly(
     channelSyncId: string,
     dbxRootPath: string,
     entry: DropboxFileListFolderSingleEntry,
   ) {
-    const copilotApi = new CopilotAPI(this.user.token)
     const mappedFile = await this.mapFilesService.getDbxMappedFile(
       entry.id,
       channelSyncId,
-      getPathFromRoot(entry.path_display, dbxRootPath), // the file path ensures the file to be deleted
+      getPathFromRoot(entry.path_display, dbxRootPath),
     )
-    logger.info(
-      'SyncService#removeFileFromAssembly :: Removing file from Assembly for channel',
-      channelSyncId,
-    )
-
-    if (!mappedFile) {
+    if (!mappedFile) return
+    if (!mappedFile.assemblyFileId) {
+      logger.warn('removeFileFromAssembly :: row missing assemblyFileId, skipping', {
+        rowId: mappedFile.id,
+      })
       return
     }
-    if (mappedFile.assemblyFileId) {
-      const deleteMappedFile = this.mapFilesService.deleteFileMap(mappedFile.id)
-      const deleteFileInAssembly = copilotApi.deleteFile(mappedFile.assemblyFileId)
-      await Promise.all([deleteMappedFile, deleteFileInAssembly])
-    }
-    logger.info(
-      'SyncService#removeFileFromAssembly :: File removed from Assembly for channel',
-      channelSyncId,
+
+    await this.mapFilesService.markAttempt(
+      mappedFile.id,
+      PendingAction.DELETE,
+      PendingActionTarget.ASSEMBLY,
     )
+
+    try {
+      await this.deleteAssemblyFileQuietly(mappedFile.assemblyFileId)
+      await this.mapFilesService.markDeleted(mappedFile.id)
+    } catch (error) {
+      await this.mapFilesService.markFailure(mappedFile.id, normalizeError(error))
+      throw error
+    }
   }
 
   async removeFileFromDropbox(payload: AssemblyToDropboxSyncFilesPayload) {
-    try {
-      const { file, opts } = payload
-      const { channelSyncId } = opts
-      const mappedFile = await this.mapFilesService.getAssemblyMappedFile(file.id, channelSyncId)
-      if (!mappedFile) {
-        return
-      }
-      const { dbxRootPath } = opts
-      const dbxFilePath = `${dbxRootPath}${mappedFile.itemPath}`
-      const dbxClient = this.dbxClient.getDropboxClient()
+    const { file, opts } = payload
+    const { channelSyncId, dbxRootPath } = opts
 
-      await this.mapFilesService.deleteFileMap(mappedFile.id)
-      await dbxClient.filesDeleteV2({ path: dbxFilePath })
-      logger.info(
-        'SyncService#removeFileFromDropbox :: File removed from Dropbox for channel',
-        channelSyncId,
-      )
-    } catch (error: unknown) {
-      if (error instanceof DropboxResponseError) {
-        console.info({ err: error.error })
-      } else {
-        console.error('error : ', error)
-      }
+    const mappedFile = await this.mapFilesService.getAssemblyMappedFile(file.id, channelSyncId)
+    if (!mappedFile) return
+    if (!mappedFile.itemPath) {
+      logger.warn('removeFileFromDropbox :: row missing itemPath, skipping', {
+        rowId: mappedFile.id,
+      })
+      return
+    }
+
+    await this.mapFilesService.markAttempt(
+      mappedFile.id,
+      PendingAction.DELETE,
+      PendingActionTarget.DROPBOX,
+    )
+
+    try {
+      await this.deleteDropboxFileQuietly(`${dbxRootPath}${mappedFile.itemPath}`)
+      await this.mapFilesService.markDeleted(mappedFile.id)
+    } catch (error) {
+      await this.mapFilesService.markFailure(mappedFile.id, normalizeError(error))
+      throw error
     }
   }
 
@@ -326,26 +416,31 @@ export class SyncService extends AuthenticatedDropboxService {
   }
 
   async syncAssemblyFilesToDropbox({ file, opts }: AssemblyToDropboxSyncFilesPayload) {
-    console.info(`SyncService#syncAssemblyFilesToDropbox. Channel ID: ${opts.assemblyChannelId}`)
-
     const { channelSyncId, dbxRootPath } = opts
-    const filePayload = {
+
+    const pending = await this.mapFilesService.insertCreatePending({
       channelSyncId,
+      assemblyFileId: file.id,
+      dbxFileId: null,
       itemPath: `/${file.path}`, //appending '/' to maintain consistency
       object: file.object,
-      portalId: this.user.portalId,
-      assemblyFileId: file.id,
+      target: PendingActionTarget.DROPBOX,
+    })
+
+    if (!pending) {
+      logger.info('syncAssemblyFilesToDropbox :: race lost, skipping', {
+        channelSyncId,
+        assemblyFileId: file.id,
+      })
+      return
     }
 
-    const dbxFileInfo = await this.createAndUploadFileInDropbox(dbxRootPath, file.object, file)
-    await this.mapFilesService.insertFileMap({
-      ...filePayload,
-      ...dbxFileInfo,
+    await this.completePendingDropboxCreate({
+      pendingRowId: pending.id,
+      channelSyncId,
+      dbxRootPath,
+      file,
     })
-    console.info(
-      `SyncService#syncAssemblyFilesToDropbox. Channel ID: ${opts.assemblyChannelId}. File upload success. Type: ${file.object}. File ID: ${filePayload.assemblyFileId}. Dbx fileId: ${dbxFileInfo?.dbxFileId}`,
-    )
-    await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
   }
 
   async createAndUploadFileInDropbox(
@@ -369,6 +464,7 @@ export class SyncService extends AuthenticatedDropboxService {
       | dropboxFiles.FolderMetadataReference
       | dropboxFiles.DeletedMetadataReference
       | undefined
+
     try {
       const dbxResponse = await dbxClient.filesGetMetadata({ path: dbxFilePath })
       existing = dbxResponse.result
@@ -462,5 +558,32 @@ export class SyncService extends AuthenticatedDropboxService {
 
   async removeChannelSyncMapping(channelSyncId: string) {
     await this.mapFilesService.deleteChannelMapsByIds([channelSyncId])
+  }
+
+  private async deleteAssemblyFileQuietly(assemblyFileId: string) {
+    const copilotApi = new CopilotAPI(this.user.token)
+    try {
+      await copilotApi.deleteFile(assemblyFileId)
+    } catch (error) {
+      if (isCopilotApiError(error) && error.status === 404) return
+      throw error
+    }
+  }
+
+  private async deleteDropboxFileQuietly(dbxFilePath: string) {
+    try {
+      await this.dbxClient.getDropboxClient().filesDeleteV2({ path: dbxFilePath })
+    } catch (error) {
+      if (
+        error instanceof DropboxResponseError &&
+        error.status === 409 &&
+        (error.error as { error_summary?: string })?.error_summary?.startsWith(
+          'path_lookup/not_found',
+        )
+      ) {
+        return
+      }
+      throw error
+    }
   }
 }
