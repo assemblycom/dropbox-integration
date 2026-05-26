@@ -1,4 +1,4 @@
-import { logger, task } from '@trigger.dev/sdk/v3'
+import { logger, schedules, task } from '@trigger.dev/sdk/v3'
 import { and, eq, isNotNull } from 'drizzle-orm'
 import z from 'zod'
 import env from '@/config/server.env'
@@ -15,7 +15,8 @@ import {
   type WhereClause,
 } from '@/features/sync/types'
 import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
-import { syncFailedFilesToAssembly } from '@/features/workers/resync-failed-files/helper/resync-failed-files.helper'
+import { retryFailedSyncsForPortal } from '@/features/workers/resync-failed-files/helper/resync-failed-files.helper'
+import { ResyncService } from '@/features/workers/resync-failed-files/lib/resync-failed-files.service'
 import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import type User from '@/lib/copilot/models/User.model'
 import { DropboxAuthClient } from '@/lib/dropbox/DropboxAuthClient'
@@ -431,6 +432,22 @@ export const resyncFailedFilesInAssembly = task({
   },
   run: async (payload: { portalId: string; failedSyncs: FileSyncSelectType[] }) => {
     const { portalId, failedSyncs } = payload
-    await syncFailedFilesToAssembly(portalId, failedSyncs)
+    await retryFailedSyncsForPortal(portalId, failedSyncs)
+  },
+})
+
+/** Scheduled sweep: fans out per-portal retries for rows with pending_action tombstones (subject to backoff + MAX_ATTEMPTS). Replaces the previous Vercel cron. */
+export const retryFailedSyncsSchedule = schedules.task({
+  id: 'retry-failed-syncs-schedule',
+  machine,
+  cron: '*/15 * * * *',
+  queue: {
+    name: 'retry-failed-syncs-schedule',
+    concurrencyLimit: 1,
+  },
+  retry: { maxAttempts: 1 },
+  run: async () => {
+    logger.info('retryFailedSyncsSchedule :: sweep tick')
+    await new ResyncService().resyncFailedFiles()
   },
 })
