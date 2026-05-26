@@ -85,6 +85,13 @@
       "when": 1779446436504,
       "tag": "20260522104036_add_pending_action_columns_to_file_folder_sync",
       "breakpoints": false
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1779788469229,
+      "tag": "20260526094109_add_unique_indexes_on_portal_channel_assembly_and_dbx_file",
+      "breakpoints": false
     }
   ]
 }
