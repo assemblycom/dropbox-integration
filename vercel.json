@@ -1,11 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["iad1", "pdx1"],
-  "buildCommand": "./scripts/build/build.sh",
-  "crons": [
-    {
-      "path": "/api/workers/resync-failed-files",
-      "schedule": "0 0 * * *"
-    }
-  ]
+  "buildCommand": "./scripts/build/build.sh"
 }

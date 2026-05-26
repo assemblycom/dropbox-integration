@@ -13,7 +13,7 @@ export type DropboxClientTypeValue = (typeof DropboxClientType)[keyof typeof Dro
 export enum PendingAction {
   DELETE = 'delete',
   CREATE = 'create',
-  UPDATE = 'update',
+  UPDATE = 'update', // TODO: remove update action
 }
 export type PendingActionValue = (typeof PendingAction)[keyof typeof PendingAction]
 
