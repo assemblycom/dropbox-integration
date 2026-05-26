@@ -3,7 +3,14 @@ import httpStatus from 'http-status'
 import z from 'zod'
 import { MAX_FETCH_COPILOT_RESOURCES } from '@/constants/limits'
 import db from '@/db'
-import { ObjectType } from '@/db/constants'
+import {
+  ObjectType,
+  type ObjectTypeValue,
+  PendingAction,
+  PendingActionTarget,
+  type PendingActionTargetValue,
+  type PendingActionValue,
+} from '@/db/constants'
 import {
   type ChannelSyncCreateType,
   type ChannelSyncSelectType,
@@ -29,6 +36,18 @@ import {
 } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
 import logger from '@/lib/logger'
+
+const MAX_ERROR_MESSAGE_LENGTH = 500
+
+type MarkUpdatedPayload = Omit<
+  FileSyncUpdatePayload,
+  | 'pendingAction'
+  | 'pendingActionTarget'
+  | 'pendingActionAttempts'
+  | 'pendingActionLastAttemptAt'
+  | 'pendingActionLastError'
+  | 'deletedAt'
+>
 
 export class MapFilesService extends AuthenticatedDropboxService {
   async getSingleFileMap(where: WhereClause): Promise<FileSyncSelectType | undefined> {
@@ -64,6 +83,44 @@ export class MapFilesService extends AuthenticatedDropboxService {
     return mappedFile
   }
 
+  /** Pre-insert a create-pending tombstone row. Returns null if the conflict target already has a live row. */
+  async insertCreatePending(payload: {
+    channelSyncId: string
+    itemPath: string
+    object: ObjectTypeValue
+    target: PendingActionTargetValue
+    assemblyFileId: string | null
+    dbxFileId: string | null
+  }): Promise<FileSyncSelectType | null> {
+    logger.info('MapFilesService#insertCreatePending', payload)
+
+    const conflictColumns =
+      payload.target === PendingActionTarget.DROPBOX
+        ? [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.assemblyFileId]
+        : [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.dbxFileId]
+
+    const [inserted] = await db
+      .insert(fileFolderSync)
+      .values({
+        portalId: this.user.portalId,
+        channelSyncId: payload.channelSyncId,
+        assemblyFileId: payload.assemblyFileId,
+        dbxFileId: payload.dbxFileId,
+        itemPath: payload.itemPath,
+        object: payload.object,
+        contentHash: null,
+        pendingAction: PendingAction.CREATE,
+        pendingActionTarget: payload.target,
+      })
+      .onConflictDoNothing({
+        target: conflictColumns,
+        where: sql`${fileFolderSync.deletedAt} IS NULL`,
+      })
+      .returning()
+
+    return inserted ?? null
+  }
+
   async deleteFileMap(id: string): Promise<void> {
     logger.info('MapFilesService#deleteFileMap :: Deleting file map for', id)
     await db.delete(fileFolderSync).where(eq(fileFolderSync.id, id))
@@ -83,6 +140,92 @@ export class MapFilesService extends AuthenticatedDropboxService {
     logger.info('MapFilesService#updateFileMap :: Updated file map', connection)
 
     return connection
+  }
+
+  async markAttempt(
+    id: string,
+    action: PendingActionValue,
+    target: PendingActionTargetValue,
+  ): Promise<FileSyncSelectType> {
+    logger.info('MapFilesService#markAttempt', { id, action, target })
+
+    const [updated] = await db
+      .update(fileFolderSync)
+      .set({
+        pendingAction: action,
+        pendingActionTarget: target,
+        pendingActionAttempts: sql`CASE
+          WHEN ${fileFolderSync.pendingAction} = ${action}
+           AND ${fileFolderSync.pendingActionTarget} = ${target}
+          THEN ${fileFolderSync.pendingActionAttempts} + 1
+          ELSE 1
+        END`,
+        pendingActionLastAttemptAt: new Date(),
+        pendingActionLastError: null,
+      })
+      .where(and(eq(fileFolderSync.portalId, this.user.portalId), eq(fileFolderSync.id, id)))
+      .returning()
+
+    if (!updated) {
+      throw new Error(`MapFilesService#markAttempt: row not found (id=${id})`)
+    }
+    return updated
+  }
+
+  async markDeleted(id: string): Promise<void> {
+    logger.info('MapFilesService#markDeleted', { id })
+
+    const [updated] = await db
+      .update(fileFolderSync)
+      .set({
+        deletedAt: new Date(),
+        pendingAction: null,
+        pendingActionTarget: null,
+        pendingActionAttempts: 0,
+        pendingActionLastAttemptAt: null,
+        pendingActionLastError: null,
+      })
+      .where(and(eq(fileFolderSync.portalId, this.user.portalId), eq(fileFolderSync.id, id)))
+      .returning({ id: fileFolderSync.id })
+
+    if (!updated) {
+      throw new Error(`MapFilesService#markDeleted: row not found (id=${id})`)
+    }
+  }
+
+  async markUpdated(id: string, payload: MarkUpdatedPayload): Promise<FileSyncSelectType> {
+    logger.info('MapFilesService#markUpdated', { id, payload })
+
+    const [updated] = await db
+      .update(fileFolderSync)
+      .set({
+        ...payload,
+        pendingAction: null,
+        pendingActionTarget: null,
+        pendingActionAttempts: 0,
+        pendingActionLastAttemptAt: null,
+        pendingActionLastError: null,
+      })
+      .where(and(eq(fileFolderSync.portalId, this.user.portalId), eq(fileFolderSync.id, id)))
+      .returning()
+
+    if (!updated) {
+      throw new Error(`MapFilesService#markUpdated: row not found (id=${id})`)
+    }
+    return updated
+  }
+
+  async markFailure(id: string, errorMessage: string): Promise<void> {
+    const truncated = errorMessage.slice(0, MAX_ERROR_MESSAGE_LENGTH)
+    logger.info('MapFilesService#markFailure', { id, truncated })
+
+    await db
+      .update(fileFolderSync)
+      .set({
+        pendingActionLastError: truncated,
+        pendingActionLastAttemptAt: new Date(),
+      })
+      .where(and(eq(fileFolderSync.portalId, this.user.portalId), eq(fileFolderSync.id, id)))
   }
 
   async getDbxMappedFile(dbxId: string, channelSyncId: string, path: string) {
@@ -130,7 +273,6 @@ export class MapFilesService extends AuthenticatedDropboxService {
       and(
         eq(fileFolderSync.channelSyncId, channelSyncId),
         isNotNull(fileFolderSync.dbxFileId),
-        isNotNull(fileFolderSync.assemblyFileId),
       ) as WhereClause,
     )
     const results = mappedFile.map((file) => file.dbxFileId)
@@ -170,7 +312,6 @@ export class MapFilesService extends AuthenticatedDropboxService {
       and(
         eq(fileFolderSync.channelSyncId, channelSyncId),
         isNotNull(fileFolderSync.assemblyFileId),
-        isNotNull(fileFolderSync.dbxFileId),
       ) as WhereClause,
     )
     const results = mappedFile.map((file) => file.assemblyFileId)

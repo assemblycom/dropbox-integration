@@ -1,43 +1,50 @@
-import { and, isNull } from 'drizzle-orm'
+import { and, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import db from '@/db'
-import { ObjectType } from '@/db/constants'
+import logger from '@/lib/logger'
 import { resyncFailedFilesInAssembly } from '@/trigger/processFileSync'
 import type { FailedSyncWorkspaceMap } from '../utils/types'
 
+export const MAX_ATTEMPTS = 10
+export const BACKOFF_INTERVAL_MINUTES = 5
+
 export class ResyncService {
-  async resyncFailedFiles() {
-    const failedSyncs = await db.query.fileFolderSync.findMany({
-      where: (fileFolderSync, { eq }) =>
+  /** Returns rows with an active tombstone, under the attempts cap, and past the per-attempt backoff window. */
+  findFailedSyncs() {
+    return db.query.fileFolderSync.findMany({
+      where: (t) =>
         and(
-          isNull(fileFolderSync.contentHash),
-          eq(fileFolderSync.object, ObjectType.FILE),
-          isNull(fileFolderSync.deletedAt),
+          isNull(t.deletedAt),
+          isNotNull(t.pendingAction),
+          lt(t.pendingActionAttempts, MAX_ATTEMPTS),
+          or(
+            isNull(t.pendingActionLastAttemptAt),
+            lt(
+              t.pendingActionLastAttemptAt,
+              sql`NOW() - (INTERVAL '1 minute' * ${BACKOFF_INTERVAL_MINUTES} * GREATEST(${t.pendingActionAttempts}, 1))`,
+            ),
+          ),
         ),
     })
+  }
 
-    console.info('Total number of failed syncs: ', failedSyncs.length)
-    const failedSyncWorkspaceMap: FailedSyncWorkspaceMap = failedSyncs.reduce(
-      (acc: FailedSyncWorkspaceMap, failedSync) => {
-        const portalId = failedSync.portalId
+  async resyncFailedFiles() {
+    const failedSyncs = await this.findFailedSyncs()
 
-        if (!acc[portalId]) {
-          acc[portalId] = []
-        }
+    logger.info('ResyncService#resyncFailedFiles :: total failed syncs', failedSyncs.length)
 
-        acc[portalId].push(failedSync)
+    const byPortal: FailedSyncWorkspaceMap = failedSyncs.reduce(
+      (acc: FailedSyncWorkspaceMap, row) => {
+        if (!acc[row.portalId]) acc[row.portalId] = []
+        acc[row.portalId].push(row)
         return acc
       },
       {},
     )
 
-    for (const portalId in failedSyncWorkspaceMap) {
-      const failedSyncsForPortal = failedSyncWorkspaceMap[portalId]
-      resyncFailedFilesInAssembly.trigger({
-        portalId,
-        failedSyncs: failedSyncsForPortal,
-      })
-      console.info(
-        `Enqueued resync job for portal: ${portalId} with ${failedSyncsForPortal.length} files`,
+    for (const [portalId, rows] of Object.entries(byPortal)) {
+      await resyncFailedFilesInAssembly.trigger({ portalId, failedSyncs: rows })
+      logger.info(
+        `ResyncService#resyncFailedFiles :: enqueued portal=${portalId} rows=${rows.length}`,
       )
     }
   }
