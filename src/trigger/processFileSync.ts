@@ -436,11 +436,11 @@ export const resyncFailedFilesInAssembly = task({
   },
 })
 
-/** Scheduled sweep: fans out per-portal retries for rows with pending_action tombstones (subject to backoff + MAX_ATTEMPTS). Replaces the previous Vercel cron. */
+/** Scheduled sweep: fans out per-portal retries for rows with pending_action tombstones (subject to backoff + MAX_ATTEMPTS). Replaces the previous Vercel cron. Runs twice a day at off-peak hours (08:00 and 20:00 UTC). */
 export const retryFailedSyncsSchedule = schedules.task({
   id: 'retry-failed-syncs-schedule',
   machine,
-  cron: '*/15 * * * *',
+  cron: '0 8,20 * * *',
   queue: {
     name: 'retry-failed-syncs-schedule',
     concurrencyLimit: 1,
