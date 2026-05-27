@@ -94,10 +94,20 @@ export class MapFilesService extends AuthenticatedDropboxService {
   }): Promise<FileSyncSelectType | null> {
     logger.info('MapFilesService#insertCreatePending', payload)
 
-    const conflictColumns =
-      payload.target === PendingActionTarget.DROPBOX
-        ? [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.assemblyFileId]
-        : [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.dbxFileId]
+    // The conflict target + WHERE must match one of the partial unique indexes
+    // declared in fileFolderSync.schema.ts. Each index's predicate includes
+    // `<file_id> IS NOT NULL`, so the WHERE here must too — otherwise PG
+    // throws "no unique or exclusion constraint matching the ON CONFLICT
+    // specification".
+    const isDropboxTarget = payload.target === PendingActionTarget.DROPBOX
+
+    const conflictColumns = isDropboxTarget
+      ? [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.assemblyFileId]
+      : [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.dbxFileId]
+
+    const conflictWhere = isDropboxTarget
+      ? sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.assemblyFileId} IS NOT NULL`
+      : sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.dbxFileId} IS NOT NULL`
 
     const [inserted] = await db
       .insert(fileFolderSync)
@@ -114,7 +124,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
       })
       .onConflictDoNothing({
         target: conflictColumns,
-        where: sql`${fileFolderSync.deletedAt} IS NULL`,
+        where: conflictWhere,
       })
       .returning()
 
