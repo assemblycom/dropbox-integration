@@ -1,6 +1,12 @@
 import { and, eq } from 'drizzle-orm'
 import z from 'zod'
-import { ObjectType, type ObjectTypeValue } from '@/db/constants'
+import db from '@/db'
+import {
+  ObjectType,
+  type ObjectTypeValue,
+  PendingAction,
+  PendingActionTarget,
+} from '@/db/constants'
 import { channelSync } from '@/db/schema/channelSync.schema'
 import type { DropboxConnectionTokens } from '@/db/schema/dropboxConnections.schema'
 import APIError from '@/errors/APIError'
@@ -50,6 +56,45 @@ export class AssemblyWebhookService extends AuthenticatedDropboxService {
     }
     const webhookRecordService = new AssemblyWebhookRecordService(this.user, this.connectionToken)
     return await webhookRecordService.getOrCreateWebhookRecord(payload)
+  }
+
+  /**
+   * Dedupes the Assembly→Dropbox echo on file.created / folder.created. Returns
+   * the pending row if a Dropbox→Assembly create that we initiated is still
+   * in flight (pre-insert row exists with `assemblyFileId IS NULL` and a
+   * matching `itemPath`). Scoped per channel since path uniqueness lives at
+   * (portal, channel) granularity.
+   */
+  async findInFlightAssemblyCreate(
+    assemblyChannelId: string,
+    filePath: string,
+  ): Promise<{ id: string } | null> {
+    const channel = await db.query.channelSync.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull }) =>
+        andOp(
+          eqOp(t.portalId, this.user.portalId),
+          eqOp(t.assemblyChannelId, assemblyChannelId),
+          isNull(t.deletedAt),
+        ),
+    })
+    if (!channel) return null
+
+    // Stored itemPath has a leading "/"; Copilot's data.path does not.
+    const normalizedItemPath = filePath.startsWith('/') ? filePath : `/${filePath}`
+
+    const pending = await db.query.fileFolderSync.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull }) =>
+        andOp(
+          eqOp(t.portalId, this.user.portalId),
+          eqOp(t.channelSyncId, channel.id),
+          eqOp(t.itemPath, normalizedItemPath),
+          eqOp(t.pendingAction, PendingAction.CREATE),
+          eqOp(t.pendingActionTarget, PendingActionTarget.ASSEMBLY),
+          isNull(t.deletedAt),
+        ),
+    })
+
+    return pending ?? null
   }
 
   validateHandleableEvent(
