@@ -2,6 +2,7 @@ import httpStatus from 'http-status'
 import { type NextRequest, NextResponse } from 'next/server'
 import z from 'zod'
 import db from '@/db'
+import { PendingAction, PendingActionTarget } from '@/db/constants'
 import APIError from '@/errors/APIError'
 import DropboxConnectionsService from '@/features/auth/lib/DropboxConnections.service'
 import { AssemblyWebhookService } from '@/features/webhook/assembly/lib/webhook.service'
@@ -51,10 +52,36 @@ export const handleWebhookEvent = async (req: NextRequest) => {
 
   logger.info('AssemblyWebhookService#handleWebhookEvent :: Existing file', existingFile)
 
+  // Dedupe ping-pong: a Dropbox→Assembly create pre-inserts a file_folder_sync
+  // row with `itemPath` populated and `assemblyFileId IS NULL`. If Assembly's
+  // echo `file.created` webhook arrives before we've stamped `assemblyFileId`,
+  // the `existingFile` lookup above misses. Match the pre-insert by path.
+  const isCreateEvent =
+    eventType === DISPATCHABLE_HANDLEABLE_EVENT.FileCreated ||
+    eventType === DISPATCHABLE_HANDLEABLE_EVENT.FolderCreated
+
+  // Stored itemPath has a leading "/"; Copilot's `data.path` does not. Normalize.
+  const normalizedItemPath = webhookEvent.data.path.startsWith('/')
+    ? webhookEvent.data.path
+    : `/${webhookEvent.data.path}`
+
+  const pendingCreate = isCreateEvent
+    ? await db.query.fileFolderSync.findFirst({
+        where: (fileFolderSync, { eq, and, isNull }) =>
+          and(
+            eq(fileFolderSync.portalId, user.portalId),
+            eq(fileFolderSync.itemPath, normalizedItemPath),
+            eq(fileFolderSync.pendingAction, PendingAction.CREATE),
+            eq(fileFolderSync.pendingActionTarget, PendingActionTarget.ASSEMBLY),
+            isNull(fileFolderSync.deletedAt),
+          ),
+      })
+    : null
+
   switch (eventType) {
     case DISPATCHABLE_HANDLEABLE_EVENT.FileCreated:
     case DISPATCHABLE_HANDLEABLE_EVENT.FolderCreated:
-      if (!existingFile) {
+      if (!existingFile && !pendingCreate) {
         logger.info('AssemblyWebhookService#handleWebhookEvent :: File does not exist, creating')
         await assemblyWebhookService.handleFileCreated(webhookEvent)
       }
