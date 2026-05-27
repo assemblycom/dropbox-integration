@@ -90,6 +90,7 @@ export class AssemblyWebhookService extends AuthenticatedDropboxService {
           eqOp(t.itemPath, normalizedItemPath),
           eqOp(t.pendingAction, PendingAction.CREATE),
           eqOp(t.pendingActionTarget, PendingActionTarget.ASSEMBLY),
+          isNull(t.assemblyFileId), // Allow to create new file in same path. This case is very rare though.
           isNull(t.deletedAt),
         ),
     })
