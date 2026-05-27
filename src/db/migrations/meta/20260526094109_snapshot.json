@@ -1,5 +1,5 @@
 {
-  "id": "717db8f2-79b8-48ae-8f32-b22d1a8e58f3",
+  "id": "a00c8f8b-ab28-46f7-84de-6240d23983a5",
   "prevId": "537b0c47-fe56-4863-8ab3-cd96ee95c925",
   "version": "7",
   "dialect": "postgresql",
@@ -528,7 +528,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"file_folder_sync\".\"deleted_at\" IS NULL",
+          "where": "\"file_folder_sync\".\"deleted_at\" IS NULL AND \"file_folder_sync\".\"assembly_file_id\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -556,7 +556,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"file_folder_sync\".\"deleted_at\" IS NULL",
+          "where": "\"file_folder_sync\".\"deleted_at\" IS NULL AND \"file_folder_sync\".\"dbx_file_id\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
