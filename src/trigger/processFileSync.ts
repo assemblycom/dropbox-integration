@@ -267,11 +267,12 @@ export const handleChannelFileChanges = task({
       .filter((item) => !!item)
 
     /**
-     * First create and then delete the files. This ensures the files safety.
+     * Before partial unqiue index: First create and then delete the files.
+     * After partial unique index: First delete and then create the files. This ensures that constraints are not violated.
      * This section should handle file rename, folder rename cases
      */
-    if (newFiles.length) await syncDropboxFileToAssembly.batchTriggerAndWait(newFiles)
     if (deletedFiles.length) await deleteDropboxFileInAssembly.batchTriggerAndWait(deletedFiles)
+    if (newFiles.length) await syncDropboxFileToAssembly.batchTriggerAndWait(newFiles)
 
     // Filtering out remaining files that are not new files and are not deleted. Only content updated files are handled below this.
     const remainingFiles = files.filter(
