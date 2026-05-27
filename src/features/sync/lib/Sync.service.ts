@@ -173,13 +173,18 @@ export class SyncService extends AuthenticatedDropboxService {
         return
       }
 
-      await this.completePendingAssemblyCreate({
-        pendingRowId: pending.id,
-        itemPath,
-        assemblyChannelId,
-        channelSyncId,
-        entry,
-      })
+      try {
+        await this.completePendingAssemblyCreate({
+          pendingRowId: pending.id,
+          itemPath,
+          assemblyChannelId,
+          channelSyncId,
+          entry,
+        })
+      } catch (error) {
+        await this.mapFilesService.markFailure(pending.id, normalizeError(error))
+        throw error
+      }
       return
     }
 
@@ -237,31 +242,22 @@ export class SyncService extends AuthenticatedDropboxService {
     const { pendingRowId, itemPath, assemblyChannelId, channelSyncId, entry } = params
     const copilotApi = new CopilotAPI(this.user.token)
 
-    try {
-      const fileCreateResponse = await copilotApi.createFile(
-        itemPath,
-        assemblyChannelId,
-        ObjectType.FILE,
-      )
+    const fileCreateResponse = await copilotApi.createFile(
+      itemPath,
+      assemblyChannelId,
+      ObjectType.FILE,
+    )
 
-      if (fileCreateResponse.uploadUrl) {
-        await this.uploadFileInAssembly(
-          entry.path_display,
-          fileCreateResponse.uploadUrl,
-          copilotApi,
-        )
-      }
-
-      await this.mapFilesService.markUpdated(pendingRowId, {
-        assemblyFileId: fileCreateResponse.id,
-        contentHash: entry.content_hash ?? null,
-      })
-
-      await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
-    } catch (error) {
-      await this.mapFilesService.markFailure(pendingRowId, normalizeError(error))
-      throw error
+    if (fileCreateResponse.uploadUrl) {
+      await this.uploadFileInAssembly(entry.path_display, fileCreateResponse.uploadUrl, copilotApi)
     }
+
+    await this.mapFilesService.markUpdated(pendingRowId, {
+      assemblyFileId: fileCreateResponse.id,
+      contentHash: entry.content_hash ?? null,
+    })
+
+    await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
   }
 
   /** Drive an Assembly→Dropbox create against an existing pre-inserted row. Called by both syncAssemblyFilesToDropbox and the sweeper's retryCreateInDropbox. */
@@ -273,24 +269,19 @@ export class SyncService extends AuthenticatedDropboxService {
   }): Promise<void> {
     const { pendingRowId, channelSyncId, dbxRootPath, file } = params
 
-    try {
-      const dbxFileInfo = await this.createAndUploadFileInDropbox(dbxRootPath, file.object, file)
-      if (!dbxFileInfo) {
-        throw new Error(
-          `completePendingDropboxCreate: createAndUploadFileInDropbox returned undefined (file=${file.id}, type=${file.object})`,
-        )
-      }
-
-      await this.mapFilesService.markUpdated(pendingRowId, {
-        dbxFileId: dbxFileInfo.dbxFileId,
-        contentHash: dbxFileInfo.contentHash ?? null,
-      })
-
-      await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
-    } catch (error) {
-      await this.mapFilesService.markFailure(pendingRowId, normalizeError(error))
-      throw error
+    const dbxFileInfo = await this.createAndUploadFileInDropbox(dbxRootPath, file.object, file)
+    if (!dbxFileInfo) {
+      throw new Error(
+        `completePendingDropboxCreate: createAndUploadFileInDropbox returned undefined (file=${file.id}, type=${file.object})`,
+      )
     }
+
+    await this.mapFilesService.markUpdated(pendingRowId, {
+      dbxFileId: dbxFileInfo.dbxFileId,
+      contentHash: dbxFileInfo.contentHash ?? null,
+    })
+
+    await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
   }
 
   async removeFileFromAssembly(
@@ -435,12 +426,17 @@ export class SyncService extends AuthenticatedDropboxService {
       return
     }
 
-    await this.completePendingDropboxCreate({
-      pendingRowId: pending.id,
-      channelSyncId,
-      dbxRootPath,
-      file,
-    })
+    try {
+      await this.completePendingDropboxCreate({
+        pendingRowId: pending.id,
+        channelSyncId,
+        dbxRootPath,
+        file,
+      })
+    } catch (error) {
+      await this.mapFilesService.markFailure(pending.id, normalizeError(error))
+      throw error
+    }
   }
 
   async createAndUploadFileInDropbox(

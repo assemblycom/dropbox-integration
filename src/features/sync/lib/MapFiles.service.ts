@@ -94,11 +94,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
   }): Promise<FileSyncSelectType | null> {
     logger.info('MapFilesService#insertCreatePending', payload)
 
-    // The conflict target + WHERE must match one of the partial unique indexes
-    // declared in fileFolderSync.schema.ts. Each index's predicate includes
-    // `<file_id> IS NOT NULL`, so the WHERE here must too — otherwise PG
-    // throws "no unique or exclusion constraint matching the ON CONFLICT
-    // specification".
+    // WHERE must mirror the matching partial unique index in fileFolderSync.schema.ts.
     const isDropboxTarget = payload.target === PendingActionTarget.DROPBOX
 
     const conflictColumns = isDropboxTarget
@@ -121,6 +117,8 @@ export class MapFilesService extends AuthenticatedDropboxService {
         contentHash: null,
         pendingAction: PendingAction.CREATE,
         pendingActionTarget: payload.target,
+        // Stamp NOW() so the sweeper's backoff guards the in-flight create.
+        pendingActionLastAttemptAt: new Date(),
       })
       .onConflictDoNothing({
         target: conflictColumns,
