@@ -248,6 +248,14 @@ export class SyncService extends AuthenticatedDropboxService {
       ObjectType.FILE,
     )
 
+    // Stamp assemblyFileId before the upload step so a concurrent Assembly
+    // `file.created` echo webhook dedupes against this row instead of
+    // re-creating the file in Dropbox (ping-pong).
+    await this.mapFilesService.updateFileMap(
+      { assemblyFileId: fileCreateResponse.id },
+      eq(fileFolderSync.id, pendingRowId),
+    )
+
     if (fileCreateResponse.uploadUrl) {
       await this.uploadFileInAssembly(entry.path_display, fileCreateResponse.uploadUrl, copilotApi)
     }
