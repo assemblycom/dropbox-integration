@@ -2,6 +2,8 @@ import { logger, schedules, task } from '@trigger.dev/sdk/v3'
 import { and, eq, isNotNull } from 'drizzle-orm'
 import z from 'zod'
 import env from '@/config/server.env'
+import db from '@/db'
+import { channelSync } from '@/db/schema/channelSync.schema'
 import type { DropboxConnectionTokens } from '@/db/schema/dropboxConnections.schema'
 import { type FileSyncSelectType, fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import { MAX_FILES_LIMIT } from '@/features/sync/constant'
@@ -23,7 +25,7 @@ import { DropboxAuthClient } from '@/lib/dropbox/DropboxAuthClient'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import { withErrorLogging } from '@/utils/withErrorLogger'
 
-type SyncTaskPayload = {
+export type SyncTaskPayload = {
   dbxRootPath: string
   assemblyChannelId: string
   connectionToken: DropboxConnectionTokens
@@ -434,6 +436,50 @@ export const resyncFailedFilesInAssembly = task({
   run: async (payload: { portalId: string; failedSyncs: FileSyncSelectType[] }) => {
     const { portalId, failedSyncs } = payload
     await retryFailedSyncsForPortal(portalId, failedSyncs)
+  },
+})
+
+/**
+ * User-triggered orchestrator for the Resync button. Runs tombstone retries (if any), then a full bidirectional
+ * sweep for the channel. Serialised per-channel via `concurrencyKey: channelSyncId` at the call site.
+ */
+export const resyncFailedFilesAndMasterSync = task({
+  id: 'resync-failed-files-and-master-sync',
+  machine,
+  queue: {
+    name: 'resync-failed-files-and-master-sync',
+    concurrencyLimit: 1,
+  },
+  retry: { maxAttempts: 0 },
+  run: async (payload: {
+    portalId: string
+    channelSyncId: string
+    failedSyncs: FileSyncSelectType[]
+    bidirectionalPayload: SyncTaskPayload
+  }) => {
+    const { portalId, channelSyncId, failedSyncs, bidirectionalPayload } = payload
+
+    try {
+      if (failedSyncs.length > 0) {
+        await resyncFailedFilesInAssembly.triggerAndWait({ portalId, failedSyncs })
+        logger.info('resyncFailedFilesAndMasterSync :: tombstone retries complete', {
+          portalId,
+          rows: failedSyncs.length,
+        })
+      }
+
+      // The bidirectionalMasterSync task syncs all the leftout files from both sides.
+      await bidirectionalMasterSync.triggerAndWait(bidirectionalPayload)
+      logger.info('resyncFailedFilesAndMasterSync :: bidirectional sync complete', {
+        assemblyChannelId: bidirectionalPayload.assemblyChannelId,
+      })
+    } finally {
+      // Always clear resyncingAt so the UI re-enables the button — even on failure.
+      await db
+        .update(channelSync)
+        .set({ resyncingAt: null })
+        .where(eq(channelSync.id, channelSyncId))
+    }
   },
 })
 

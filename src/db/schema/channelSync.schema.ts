@@ -29,6 +29,10 @@ export const channelSync = pgTable(
     totalFilesCount: integer().default(0).notNull(),
     syncedFilesCount: integer().default(0).notNull(),
     lastSyncedAt: timestamp({ withTimezone: true, mode: 'date' }),
+    // Set when the user clicks Resync; cleared by the orchestrator when the
+    // bidirectional sync completes (or fails). Drives the "Resyncing..." UI
+    // state so it survives a page refresh.
+    resyncingAt: timestamp({ withTimezone: true, mode: 'date' }),
     ...timestampsWithSoftDelete,
   },
   (table) => [

@@ -106,6 +106,13 @@
       "when": 1781607889796,
       "tag": "20260616110449_add_item_path_lower_dedup",
       "breakpoints": false
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1782390322617,
+      "tag": "20260625122522_add_resyncing_at_column_in_channel_sync_table",
+      "breakpoints": false
     }
   ]
 }
