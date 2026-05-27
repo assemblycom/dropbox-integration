@@ -1,11 +1,14 @@
 import { Column, SQL } from 'drizzle-orm'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { PendingAction, PendingActionTarget } from '@/db/constants'
+import { ObjectType, PendingAction, PendingActionTarget } from '@/db/constants'
 
 // Capture the payload passed to .set() and the where condition for each call.
 const setSpy = vi.fn()
 const whereSpy = vi.fn()
 const returningSpy = vi.fn()
+// For .insert(...).values(...).onConflictDoNothing(...).returning()
+const valuesSpy = vi.fn()
+const onConflictSpy = vi.fn()
 
 vi.mock('@/db', () => {
   const builder = {
@@ -22,9 +25,21 @@ vi.mock('@/db', () => {
       return Promise.resolve([{ id: 'row-1' }])
     },
   }
+  const insertBuilder = {
+    values: (payload: unknown) => {
+      valuesSpy(payload)
+      return insertBuilder
+    },
+    onConflictDoNothing: (opts: unknown) => {
+      onConflictSpy(opts)
+      return insertBuilder
+    },
+    returning: () => Promise.resolve([{ id: 'row-1' }]),
+  }
   return {
     default: {
       update: () => builder,
+      insert: () => insertBuilder,
     },
   }
 })
@@ -59,6 +74,8 @@ beforeEach(() => {
   setSpy.mockClear()
   whereSpy.mockClear()
   returningSpy.mockClear()
+  valuesSpy.mockClear()
+  onConflictSpy.mockClear()
   service = new MapFilesService(user, connectionToken)
 })
 
@@ -169,6 +186,25 @@ describe('markUpdated', () => {
     // WHERE must be scoped to the portal owning the row.
     expect(whereSpy).toHaveBeenCalledTimes(1)
     expect(sqlText(whereSpy.mock.calls[0][0])).toMatch(/portal[_]?id/i)
+  })
+})
+
+describe('insertCreatePending', () => {
+  it('stamps pendingActionLastAttemptAt = NOW() so the sweeper backoff guards in-flight rows', async () => {
+    await service.insertCreatePending({
+      channelSyncId: 'cs-1',
+      itemPath: '/folder/file.txt',
+      object: ObjectType.FILE,
+      target: PendingActionTarget.ASSEMBLY,
+      assemblyFileId: null,
+      dbxFileId: 'd1',
+    })
+
+    expect(valuesSpy).toHaveBeenCalledTimes(1)
+    const payload = valuesSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(payload.pendingAction).toBe(PendingAction.CREATE)
+    expect(payload.pendingActionTarget).toBe(PendingActionTarget.ASSEMBLY)
+    expect(payload.pendingActionLastAttemptAt).toBeInstanceOf(Date)
   })
 })
 
