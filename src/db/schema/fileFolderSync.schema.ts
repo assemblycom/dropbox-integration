@@ -51,12 +51,17 @@ export const fileFolderSync = pgTable(
       'file_folder_sync_pending_action_target_consistency',
       sql`(${table.pendingAction} IS NULL) = (${table.pendingActionTarget} IS NULL)`,
     ),
+    // NOTE: any `ON CONFLICT` clause that targets these indexes MUST repeat
+    // the partial predicate exactly (`deleted_at IS NULL AND <file_id> IS NOT NULL`)
+    // or Postgres throws "no unique or exclusion constraint matching the
+    // ON CONFLICT specification". Pick the predicate matching the conflict
+    // column you're using.
     uniqueIndex('file_folder_sync_portal_channel_assembly_unique')
       .on(table.portalId, table.channelSyncId, table.assemblyFileId)
-      .where(sql`${table.deletedAt} IS NULL`),
+      .where(sql`${table.deletedAt} IS NULL AND ${table.assemblyFileId} IS NOT NULL`),
     uniqueIndex('file_folder_sync_portal_channel_dbx_unique')
       .on(table.portalId, table.channelSyncId, table.dbxFileId)
-      .where(sql`${table.deletedAt} IS NULL`),
+      .where(sql`${table.deletedAt} IS NULL AND ${table.dbxFileId} IS NOT NULL`),
   ],
 )
 
