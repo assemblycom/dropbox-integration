@@ -7,9 +7,11 @@ import { SyncService } from '@/features/sync/lib/Sync.service'
 import {
   FileSyncCreateRequestSchema,
   RemoveChannelSyncSchema,
+  ResyncChannelRequestSchema,
   TotalFilesCountRequestSchema,
   UpdateConnectionStatusSchema,
 } from '@/features/sync/types'
+import { ResyncService } from '@/features/workers/resync-failed-files/lib/resync-failed-files.service'
 import User from '@/lib/copilot/models/User.model'
 
 export const initiateSync = async (req: NextRequest) => {
@@ -122,4 +124,17 @@ export const getTotalFilesCount = async (req: NextRequest) => {
   )
 
   return NextResponse.json({ message: 'Total files count fetched successfully', count })
+}
+
+export const resyncChannelMapping = async (req: NextRequest) => {
+  const token = req.nextUrl.searchParams.get('token')
+  const user = await User.authenticate(token)
+
+  const body = await req.json()
+  const { channelSyncId } = ResyncChannelRequestSchema.parse(body)
+
+  const resyncService = new ResyncService()
+  const { pendingCount } = await resyncService.resyncFailedFilesForChannel(channelSyncId, user)
+
+  return NextResponse.json({ message: 'Resync initiated', pendingCount })
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "channel_sync" ADD COLUMN "resyncing_at" timestamp with time zone;

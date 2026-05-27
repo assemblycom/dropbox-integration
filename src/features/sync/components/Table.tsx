@@ -10,7 +10,12 @@ import LastSyncAt from '@/features/sync/components/LastSyncedAt'
 import { getCompanySelectorValue } from '@/features/sync/helper/sync.helper'
 import { useDialogContext } from '@/features/sync/hooks/useDialogContext'
 import { useFolder } from '@/features/sync/hooks/useFolder'
-import { useRemoveChannelSync, useTable, useUpdateUserList } from '@/features/sync/hooks/useTable'
+import {
+  useRemoveChannelSync,
+  useResyncChannel,
+  useTable,
+  useUpdateUserList,
+} from '@/features/sync/hooks/useTable'
 import { useUserChannel } from '@/features/sync/hooks/useUserChannel'
 
 const MappingTableStatus = ({
@@ -61,6 +66,7 @@ const MappingTableRow = () => {
   const { isFolderTreeLoading } = useFolder()
   const { tempMapList, userChannelList, syncedPercentage, tempFolders } = useUserChannel()
   const { openConfirmDialog } = useRemoveChannelSync()
+  const { resyncChannel } = useResyncChannel()
 
   if (isFolderTreeLoading) {
     return (
@@ -99,7 +105,9 @@ const MappingTableRow = () => {
               />
             </td>
             <td className="w-[150px] whitespace-nowrap px-6 py-2 text-gray-500 text-sm">
-              {mapItem.status && mapItem.lastSyncedAt ? (
+              {mapItem.resyncingAt ? (
+                'Resyncing...'
+              ) : mapItem.status && mapItem.lastSyncedAt ? (
                 <LastSyncAt date={mapItem.lastSyncedAt} />
               ) : (
                 '-'
@@ -116,6 +124,16 @@ const MappingTableRow = () => {
             <td className="revert-svg w-64 whitespace-nowrap px-6 py-2">
               {mapItem.id && mapItem.status !== null ? (
                 <div className="flex items-center gap-3">
+                  {mapItem.status === true && (
+                    <Button
+                      label="Resync"
+                      prefixIcon="Repeat"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => resyncChannel(mapItem.id)}
+                      disabled={!!mapItem.resyncingAt}
+                    />
+                  )}
                   <Button
                     label={`${mapItem.status ? 'Disconnect' : 'Enable'}`}
                     prefixIcon={`${mapItem.status ? 'Disconnect' : 'Repeat'}`}

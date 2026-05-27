@@ -122,6 +122,7 @@ export type MapList = {
   status: boolean | null
   fileChannelId: string
   lastSyncedAt: Date | null
+  resyncingAt: Date | null
   syncedPercentage: number
   tempId?: string
 }
@@ -134,6 +135,10 @@ export const UpdateConnectionStatusSchema = z.object({
 
 export const RemoveChannelSyncSchema = z.object({
   channelSyncId: z.string(),
+})
+
+export const ResyncChannelRequestSchema = z.object({
+  channelSyncId: z.uuid(),
 })
 
 export const TotalFilesCountRequestSchema = z.object({
