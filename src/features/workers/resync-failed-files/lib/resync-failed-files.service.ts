@@ -76,6 +76,10 @@ export class ResyncService {
       throw new APIError('Channel mapping not found', httpStatus.NOT_FOUND)
     }
 
+    if (channel.resyncingAt) {
+      throw new APIError('Resync already in progress for this channel', httpStatus.CONFLICT)
+    }
+
     const connection = await db.query.dropboxConnections.findFirst({
       where: (t, { eq }) => and(eq(t.portalId, portalId), eq(t.status, true)),
     })
