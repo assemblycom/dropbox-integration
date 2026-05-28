@@ -48,6 +48,7 @@ export const useRealtimeSync = (user: ClientUser) => {
               status: newPayload.status,
               ...(newPayload.status ? { id: newPayload.id } : {}),
               lastSyncedAt: newPayload.lastSyncedAt,
+              resyncingAt: newPayload.resyncingAt,
             }
           }
           return mapItem

@@ -223,6 +223,45 @@ export const useUpdateUserList = () => {
   return { unselectedChannelList: getNewChannelList() }
 }
 
+export const useResyncChannel = () => {
+  const { user } = useAuthContext()
+  const { setUserChannel } = useUserChannel()
+
+  const setResyncingAt = (channelSyncId: string, value: Date | null) => {
+    setUserChannel((prev) => ({
+      ...prev,
+      tempMapList: prev.tempMapList.map((m) =>
+        m.id === channelSyncId ? { ...m, resyncingAt: value } : m,
+      ),
+    }))
+  }
+
+  const resyncChannel = async (channelSyncId?: string) => {
+    if (!channelSyncId) return
+
+    // Optimistic UI: realtime will overwrite this with the server timestamp.
+    setResyncingAt(channelSyncId, new Date())
+
+    try {
+      await customFetcher(
+        'POST',
+        `/api/sync/resync?token=${user.token}`,
+        {},
+        {
+          body: JSON.stringify({ channelSyncId }),
+        },
+      )
+    } catch (error: unknown) {
+      console.error(error)
+      setResyncingAt(channelSyncId, null)
+    }
+  }
+
+  return {
+    resyncChannel,
+  }
+}
+
 export const useRemoveChannelSync = () => {
   const { user } = useAuthContext()
   const { setUserChannel, tempMapList } = useUserChannel()

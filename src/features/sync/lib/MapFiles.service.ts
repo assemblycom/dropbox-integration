@@ -685,6 +685,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
       status: channelMap.status,
       fileChannelId: fileChannel.id,
       lastSyncedAt: channelMap.lastSyncedAt,
+      resyncingAt: channelMap.resyncingAt,
       syncedPercentage,
     }
   }

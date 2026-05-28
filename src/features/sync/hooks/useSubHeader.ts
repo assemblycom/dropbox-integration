@@ -24,6 +24,7 @@ export const useSubHeader = () => {
             status: false,
             fileChannelId: '',
             lastSyncedAt: null,
+            resyncingAt: null,
             syncedPercentage: 0,
             tempId: `${generateRandomString(8)}`,
           },
