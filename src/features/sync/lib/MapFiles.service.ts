@@ -95,15 +95,13 @@ export class MapFilesService extends AuthenticatedDropboxService {
     logger.info('MapFilesService#insertCreatePending', payload)
 
     // WHERE must mirror the matching partial unique index in fileFolderSync.schema.ts.
-    const isDropboxTarget = payload.target === PendingActionTarget.DROPBOX
+    const fileIdColumn =
+      payload.target === PendingActionTarget.DROPBOX
+        ? fileFolderSync.assemblyFileId
+        : fileFolderSync.dbxFileId
 
-    const conflictColumns = isDropboxTarget
-      ? [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.assemblyFileId]
-      : [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileFolderSync.dbxFileId]
-
-    const conflictWhere = isDropboxTarget
-      ? sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.assemblyFileId} IS NOT NULL`
-      : sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.dbxFileId} IS NOT NULL`
+    const conflictColumns = [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileIdColumn]
+    const conflictWhere = sql`${fileFolderSync.deletedAt} IS NULL AND ${fileIdColumn} IS NOT NULL`
 
     const [inserted] = await db
       .insert(fileFolderSync)
