@@ -441,7 +441,12 @@ export const resyncFailedFilesInAssembly = task({
 
 /**
  * User-triggered orchestrator for the Resync button. Runs tombstone retries (if any), then a full bidirectional
- * sweep for the channel. Serialised per-channel via `concurrencyKey: channelSyncId` at the call site.
+ * sweep for the channel.
+ *
+ * Concurrency: `concurrencyKey: channelSyncId` is passed at the trigger call site. In trigger.dev v4, that
+ * splits the named queue into one sub-queue per key, each inheriting `concurrencyLimit: 1`. Result —
+ * same channel runs serialise, different channels run in parallel. Same idiom is used by
+ * `processDropboxChanges` (keyed by accountId).
  */
 export const resyncFailedFilesAndMasterSync = task({
   id: 'resync-failed-files-and-master-sync',
