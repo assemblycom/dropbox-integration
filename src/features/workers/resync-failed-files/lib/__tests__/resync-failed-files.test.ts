@@ -122,6 +122,21 @@ describe('ResyncService.resyncFailedFilesForChannel', () => {
     expect(orchestratorTrigger).not.toHaveBeenCalled()
   })
 
+  it('throws 409 when a resync is already in progress for the channel', async () => {
+    findFirstChannelSync.mockImplementationOnce(async () => ({
+      id: 'c1',
+      portalId: 'p1',
+      assemblyChannelId: 'ac1',
+      dbxRootPath: '/root',
+      resyncingAt: new Date(),
+    }))
+
+    await expect(new ResyncService().resyncFailedFilesForChannel('c1', user)).rejects.toThrow(
+      'Resync already in progress for this channel',
+    )
+    expect(orchestratorTrigger).not.toHaveBeenCalled()
+  })
+
   it('throws when no active dropbox connection exists for the portal', async () => {
     findFirstChannelSync.mockImplementationOnce(async () => ({
       id: 'c1',
