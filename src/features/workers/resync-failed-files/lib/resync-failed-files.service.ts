@@ -65,7 +65,12 @@ export class ResyncService {
 
     const channel = await db.query.channelSync.findFirst({
       where: (t, { eq }) =>
-        and(eq(t.id, channelSyncId), eq(t.portalId, portalId), isNull(t.deletedAt)),
+        and(
+          eq(t.id, channelSyncId),
+          eq(t.portalId, portalId),
+          eq(t.status, true),
+          isNull(t.deletedAt),
+        ),
     })
     if (!channel) {
       throw new APIError('Channel mapping not found', httpStatus.NOT_FOUND)
