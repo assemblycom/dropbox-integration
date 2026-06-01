@@ -270,8 +270,8 @@ export class SyncService extends AuthenticatedDropboxService {
       if (inserted) {
         await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
       } else {
-        // Insert lost to a concurrent writer. If this is the folder entry itself,
-        // stamp its dbxFileId onto the existing row (the winner may have left it null).
+        // Insert lost the race. If this is the folder entry itself, stamp dbxFileId:
+        // needed if the winner wrote null (intermediate segment), else a no-op.
         await this.handleFolderCreatedCase(
           lastItem,
           tempFileType,
