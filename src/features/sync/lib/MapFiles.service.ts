@@ -310,13 +310,24 @@ export class MapFilesService extends AuthenticatedDropboxService {
       channelSyncId,
     )
 
-    const [mappedFile] = await this.getAllFileMaps(
+    const mappedFiles = await this.getAllFileMaps(
       and(
         eq(fileFolderSync.channelSyncId, channelSyncId),
         eq(fileFolderSync.itemPath, dbxPath),
         isNotNull(fileFolderSync.assemblyFileId),
       ) as WhereClause,
     )
+    const [mappedFile] = mappedFiles
+
+    // A path maps to one live row. >1 means a duplicate slipped through — e.g.
+    // if Assembly stopped being path-idempotent on folder create.
+    if (mappedFiles.length > 1) {
+      logger.warn('MapFilesService#getDbxMappedFileFromPath :: duplicate rows for path', {
+        channelSyncId,
+        dbxPath,
+        assemblyFileIds: mappedFiles.map((f) => f.assemblyFileId),
+      })
+    }
     logger.info(
       'MapFilesService#getDbxMappedFileFromPath :: Got dbx mapped file from path',
       mappedFile,
