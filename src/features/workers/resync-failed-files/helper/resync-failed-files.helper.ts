@@ -1,9 +1,9 @@
-import { and } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { DropboxResponseError } from 'dropbox'
 import env from '@/config/server.env'
 import db from '@/db'
 import { PendingAction, PendingActionTarget } from '@/db/constants'
-import type { FileSyncSelectType } from '@/db/schema/fileFolderSync.schema'
+import { type FileSyncSelectType, fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import APIError from '@/errors/APIError'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import { SyncService } from '@/features/sync/lib/Sync.service'
@@ -23,6 +23,9 @@ type PortalDeps = {
   syncService: SyncService
   mapFilesService: MapFilesService
 }
+
+// Pending uploads older than this are treated as abandoned and reclaimed.
+const STUCK_PENDING_THRESHOLD_MS = 24 * 60 * 60 * 1000
 
 /** Entry point for the scheduled sweep — per-row errors are recorded, never rethrown. */
 export const retryFailedSyncsForPortal = async (portalId: string, rows: FileSyncSelectType[]) => {
@@ -119,9 +122,7 @@ const retryDeleteInDropbox = async (failedSync: FileSyncSelectType, deps: Portal
     return
   }
 
-  const channelSync = await db.query.channelSync.findFirst({
-    where: (channelSync, { eq }) => eq(channelSync.id, failedSync.channelSyncId),
-  })
+  const channelSync = await getChannelSync(failedSync.channelSyncId)
   if (!channelSync) {
     logger.warn('retryDeleteInDropbox :: channelSync missing, soft-deleting row', {
       rowId: failedSync.id,
@@ -170,9 +171,7 @@ const retryCreateInDropbox = async (failedSync: FileSyncSelectType, deps: Portal
     return
   }
 
-  const channelSync = await db.query.channelSync.findFirst({
-    where: (channelSync, { eq }) => eq(channelSync.id, failedSync.channelSyncId),
-  })
+  const channelSync = await getChannelSync(failedSync.channelSyncId)
   if (!channelSync) {
     await mapFilesService.markFailure(failedSync.id, 'retryCreateInDropbox: channelSync missing')
     return
@@ -228,9 +227,7 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
     return
   }
 
-  const channelSync = await db.query.channelSync.findFirst({
-    where: (channelSync, { eq }) => eq(channelSync.id, failedSync.channelSyncId),
-  })
+  const channelSync = await getChannelSync(failedSync.channelSyncId)
   if (!channelSync) {
     await mapFilesService.markFailure(failedSync.id, 'retryCreateInAssembly: channelSync missing')
     return
@@ -241,9 +238,17 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
     await mapFilesService.markDeleted(failedSync.id)
     return
   }
-
-  // Bypass syncDropboxFilesToAssembly: it would no-op because insertCreatePending sees the existing row.
   const entry = DropboxFileListFolderSingleEntrySchema.parse(dbxMeta)
+
+  const shouldRecreate = await reconcileExistingAssemblyFile(
+    failedSync,
+    channelSync.id,
+    entry,
+    deps,
+  )
+  if (!shouldRecreate) return
+
+  // Bypass syncDropboxFilesToAssembly — it would no-op against the existing row.
   await syncService.completePendingAssemblyCreate({
     pendingRowId: failedSync.id,
     itemPath: failedSync.itemPath,
@@ -251,6 +256,67 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
     channelSyncId: channelSync.id,
     entry,
   })
+}
+
+// A row's early-stamped assemblyFileId may already point at a live file.
+// Returns true if the caller should (re-)create, false if already handled.
+const reconcileExistingAssemblyFile = async (
+  failedSync: FileSyncSelectType,
+  channelSyncId: string,
+  entry: ReturnType<typeof DropboxFileListFolderSingleEntrySchema.parse>,
+  deps: PortalDeps,
+): Promise<boolean> => {
+  const { copilotApi, mapFilesService } = deps
+
+  if (!failedSync.assemblyFileId) return true
+
+  try {
+    const existing = await copilotApi.retrieveFile(failedSync.assemblyFileId)
+
+    if (existing.status === 'completed') {
+      // Last attempt finished but never reached markUpdated — reconcile.
+      await mapFilesService.markUpdated(failedSync.id, {
+        assemblyFileId: failedSync.assemblyFileId,
+        contentHash: entry.content_hash ?? null,
+      })
+      await mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+      logger.info('retryCreateInAssembly :: reconciled existing complete Assembly file', {
+        rowId: failedSync.id,
+        assemblyFileId: failedSync.assemblyFileId,
+      })
+      return false
+    }
+
+    // Still pending and young — likely a legit in-flight upload, retry later.
+    const ageMs = Date.now() - failedSync.createdAt.getTime()
+    if (ageMs < STUCK_PENDING_THRESHOLD_MS) {
+      await mapFilesService.markFailure(
+        failedSync.id,
+        'retryCreateInAssembly: Assembly file still pending upload, will retry next sweep',
+      )
+      return false
+    }
+
+    // Abandoned. Null the id before deleting so the file.deleted webhook can't
+    // match this row and race the re-create.
+    await mapFilesService.updateFileMap(
+      { assemblyFileId: null },
+      eq(fileFolderSync.id, failedSync.id),
+    )
+    await copilotApi.deleteFile(failedSync.assemblyFileId)
+    logger.info('retryCreateInAssembly :: deleted stale pending Assembly file before re-create', {
+      rowId: failedSync.id,
+      assemblyFileId: failedSync.assemblyFileId,
+      ageMs,
+    })
+    return true
+  } catch (error) {
+    if (!isCopilotApiError(error) || error.status !== 404) {
+      throw error
+    }
+    // 404 → file is already gone; proceed to the create path.
+    return true
+  }
 }
 
 const getDropboxConnection = async (portalId: string) => {
@@ -288,6 +354,11 @@ const initializeSyncDependencies = async (
 
   return { user, copilotApi, dbxClient, connectionToken, syncService, mapFilesService }
 }
+
+const getChannelSync = (channelSyncId: string) =>
+  db.query.channelSync.findFirst({
+    where: (channelSync, { eq }) => eq(channelSync.id, channelSyncId),
+  })
 
 const getFileFromDropbox = async (dbxClient: DropboxClient, dropboxFileId: string) => {
   if (!dropboxFileId) return null
