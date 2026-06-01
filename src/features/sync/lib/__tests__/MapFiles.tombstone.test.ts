@@ -9,6 +9,9 @@ const returningSpy = vi.fn()
 // For .insert(...).values(...).onConflictDoNothing(...).returning()
 const valuesSpy = vi.fn()
 const onConflictSpy = vi.fn()
+// Controls what the insert chain's .returning() resolves to, so tests can
+// simulate both a successful insert and an onConflictDoNothing no-op (empty).
+let insertReturning: unknown[] = [{ id: 'row-1' }]
 
 vi.mock('@/db', () => {
   const builder = {
@@ -34,7 +37,7 @@ vi.mock('@/db', () => {
       onConflictSpy(opts)
       return insertBuilder
     },
-    returning: () => Promise.resolve([{ id: 'row-1' }]),
+    returning: () => Promise.resolve(insertReturning),
   }
   return {
     default: {
@@ -76,6 +79,7 @@ beforeEach(() => {
   returningSpy.mockClear()
   valuesSpy.mockClear()
   onConflictSpy.mockClear()
+  insertReturning = [{ id: 'row-1' }]
   service = new MapFilesService(user, connectionToken)
 })
 
@@ -186,6 +190,49 @@ describe('markUpdated', () => {
     // WHERE must be scoped to the portal owning the row.
     expect(whereSpy).toHaveBeenCalledTimes(1)
     expect(sqlText(whereSpy.mock.calls[0][0])).toMatch(/portal[_]?id/i)
+  })
+})
+
+describe('insertFileMap', () => {
+  const folderPayload = {
+    portalId,
+    channelSyncId: 'cs-1',
+    itemPath: '/abc',
+    object: ObjectType.FOLDER,
+    assemblyFileId: '00000000-0000-0000-0000-000000000001',
+    dbxFileId: null,
+  }
+
+  it('dedupes on (portal, channel, assemblyFileId) with the partial-index predicate', async () => {
+    await service.insertFileMap(folderPayload)
+
+    expect(onConflictSpy).toHaveBeenCalledTimes(1)
+    const opts = onConflictSpy.mock.calls[0][0] as { target: unknown; where: unknown }
+
+    // Conflict target must be the existing assembly unique index columns.
+    const targetCols = (opts.target as unknown[]).map((c) => (c as { name: string }).name).join(' ')
+    expect(targetCols).toMatch(/portal[_]?id/i)
+    expect(targetCols).toMatch(/channel[_]?sync[_]?id/i)
+    expect(targetCols).toMatch(/assembly[_]?file[_]?id/i)
+
+    // WHERE must mirror the partial index predicate exactly.
+    const where = sqlText(opts.where)
+    expect(where).toMatch(/deleted[_]?at/i)
+    expect(where).toMatch(/IS NULL/i)
+    expect(where).toMatch(/assembly[_]?file[_]?id/i)
+    expect(where).toMatch(/IS NOT NULL/i)
+  })
+
+  it('returns the inserted row when no conflict', async () => {
+    insertReturning = [{ id: 'row-1' }]
+    const result = await service.insertFileMap(folderPayload)
+    expect(result).toEqual({ id: 'row-1' })
+  })
+
+  it('returns null when the row already exists (onConflictDoNothing no-op)', async () => {
+    insertReturning = []
+    const result = await service.insertFileMap(folderPayload)
+    expect(result).toBeNull()
   })
 })
 
