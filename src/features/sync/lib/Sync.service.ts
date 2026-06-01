@@ -149,46 +149,108 @@ export class SyncService extends AuthenticatedDropboxService {
       'SyncService#createAndUploadFileToAssembly :: Creating and uploading file to Assembly for channel',
       assemblyChannelId,
     )
-    const copilotApi = new CopilotAPI(this.user.token)
-    const tempFileType = lastItem ? fileObjectType : ObjectType.FOLDER
 
     const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
-
     if (isLeafFile) {
-      const pending = await this.mapFilesService.insertCreatePending({
+      await this.createLeafFileInAssembly({ assemblyChannelId, itemPath, channelSyncId, entry })
+      return
+    }
+
+    await this.createFolderInAssembly({
+      assemblyChannelId,
+      itemPath,
+      lastItem,
+      tempFileType: lastItem ? fileObjectType : ObjectType.FOLDER,
+      channelSyncId,
+      entry,
+      basePath,
+    })
+  }
+
+  /**
+   * Leaf-file create: pre-insert a create-pending row (which dedupes concurrent
+   * siblings via insertCreatePending's onConflict), then drive the Assembly
+   * create against that row, marking failure if it throws.
+   */
+  private async createLeafFileInAssembly(params: {
+    assemblyChannelId: string
+    itemPath: string
+    channelSyncId: string
+    entry: DropboxFileListFolderSingleEntry
+  }): Promise<void> {
+    const { assemblyChannelId, itemPath, channelSyncId, entry } = params
+
+    const pending = await this.mapFilesService.insertCreatePending({
+      channelSyncId,
+      itemPath,
+      object: ObjectType.FILE,
+      target: PendingActionTarget.ASSEMBLY,
+      assemblyFileId: null,
+      dbxFileId: entry.id,
+    })
+
+    if (!pending) {
+      logger.info('SyncService#createLeafFileInAssembly :: race lost, skipping', {
         channelSyncId,
-        itemPath,
-        object: ObjectType.FILE,
-        target: PendingActionTarget.ASSEMBLY,
-        assemblyFileId: null,
         dbxFileId: entry.id,
+        itemPath,
       })
-
-      if (!pending) {
-        logger.info('createAndUploadFileToAssembly :: race lost, skipping', {
-          channelSyncId,
-          dbxFileId: entry.id,
-          itemPath,
-        })
-        return
-      }
-
-      try {
-        await this.completePendingAssemblyCreate({
-          pendingRowId: pending.id,
-          itemPath,
-          assemblyChannelId,
-          channelSyncId,
-          entry,
-        })
-      } catch (error) {
-        await this.mapFilesService.markFailure(pending.id, normalizeError(error))
-        throw error
-      }
       return
     }
 
     try {
+      await this.completePendingAssemblyCreate({
+        pendingRowId: pending.id,
+        itemPath,
+        assemblyChannelId,
+        channelSyncId,
+        entry,
+      })
+    } catch (error) {
+      await this.mapFilesService.markFailure(pending.id, normalizeError(error))
+      throw error
+    }
+  }
+
+  /** Folder create: pre-check skips redundant creates, insertFileMap's onConflict is the race net (OUT-3800). */
+  private async createFolderInAssembly(params: {
+    assemblyChannelId: string
+    itemPath: string
+    lastItem: boolean
+    tempFileType: ObjectTypeValue
+    channelSyncId: string
+    entry: DropboxFileListFolderSingleEntry
+    basePath: string
+  }): Promise<void> {
+    const { assemblyChannelId, itemPath, lastItem, tempFileType, channelSyncId, entry, basePath } =
+      params
+
+    try {
+      // A sibling may have already created this folder; skip the redundant create.
+      const existingFolder = await this.mapFilesService.getDbxMappedFileFromPath(
+        itemPath,
+        channelSyncId,
+      )
+      if (existingFolder) {
+        logger.info(
+          'SyncService#createFolderInAssembly :: folder already mapped, skipping create',
+          {
+            channelSyncId,
+            itemPath,
+          },
+        )
+        // If this entry is the folder itself, make sure its dbxFileId is stamped.
+        await this.handleFolderCreatedCase(
+          lastItem,
+          tempFileType,
+          channelSyncId,
+          basePath,
+          entry.id,
+        )
+        return
+      }
+
+      const copilotApi = new CopilotAPI(this.user.token)
       const fileCreateResponse = await copilotApi.createFile(
         itemPath,
         assemblyChannelId,
@@ -200,14 +262,24 @@ export class SyncService extends AuthenticatedDropboxService {
         object: tempFileType,
         assemblyFileId: fileCreateResponse.id,
         portalId: this.user.portalId,
+        dbxFileId: lastItem ? entry.id : null,
       }
 
-      await this.mapFilesService.insertFileMap({
-        ...filePayload,
-        dbxFileId: lastItem ? entry.id : null,
-      })
+      const inserted = await this.mapFilesService.insertFileMap(filePayload)
 
-      await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+      if (inserted) {
+        await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+      } else {
+        // Insert lost to a concurrent writer. If this is the folder entry itself,
+        // stamp its dbxFileId onto the existing row (the winner may have left it null).
+        await this.handleFolderCreatedCase(
+          lastItem,
+          tempFileType,
+          channelSyncId,
+          basePath,
+          entry.id,
+        )
+      }
     } catch (error: unknown) {
       if (
         isCopilotApiError(error) &&
@@ -225,7 +297,7 @@ export class SyncService extends AuthenticatedDropboxService {
         return
       }
       console.error(
-        `SyncService#createAndUploadFileToAssembly. Upload failed. Channel ID: ${assemblyChannelId}. Path: ${itemPath}`,
+        `SyncService#createFolderInAssembly. Upload failed. Channel ID: ${assemblyChannelId}. Path: ${itemPath}`,
       )
       throw error
     }

@@ -75,12 +75,29 @@ export class MapFilesService extends AuthenticatedDropboxService {
     return results
   }
 
-  async insertFileMap(payload: FileSyncCreateType): Promise<FileSyncSelectType> {
+  /**
+   * Insert a file/folder map row; returns null on conflict. Parallel siblings
+   * race to create their shared parent folder and get the same assemblyFileId,
+   * so onConflictDoNothing dedupes the second insert (OUT-3800). WHERE must
+   * mirror the partial unique index predicate in fileFolderSync.schema.ts.
+   */
+  async insertFileMap(payload: FileSyncCreateType): Promise<FileSyncSelectType | null> {
     logger.info('MapFilesService#insertFileMap :: Inserting file map', payload)
 
-    const [mappedFile] = await db.insert(fileFolderSync).values(payload).returning()
+    const [mappedFile] = await db
+      .insert(fileFolderSync)
+      .values(payload)
+      .onConflictDoNothing({
+        target: [
+          fileFolderSync.portalId,
+          fileFolderSync.channelSyncId,
+          fileFolderSync.assemblyFileId,
+        ],
+        where: sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.assemblyFileId} IS NOT NULL`,
+      })
+      .returning()
     logger.info('MapFilesService#insertFileMap :: Inserted file map', mappedFile)
-    return mappedFile
+    return mappedFile ?? null
   }
 
   /** Pre-insert a create-pending tombstone row. Returns null if the conflict target already has a live row. */
