@@ -270,53 +270,52 @@ const reconcileExistingAssemblyFile = async (
 
   if (!failedSync.assemblyFileId) return true
 
-  try {
-    const existing = await copilotApi.retrieveFile(failedSync.assemblyFileId)
+  // 404 → file is already gone; proceed to the create path. Other errors
+  // propagate so the task can retry instead of being silently swallowed.
+  const existing = await copilotApi.retrieveFile(failedSync.assemblyFileId).catch((err) => {
+    if (isCopilotApiError(err) && err.status === 404) return null
+    throw err
+  })
 
-    if (existing.status === 'completed') {
-      // Last attempt finished but never reached markUpdated — reconcile.
-      await mapFilesService.markUpdated(failedSync.id, {
-        assemblyFileId: failedSync.assemblyFileId,
-        contentHash: entry.content_hash ?? null,
-      })
-      await mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
-      logger.info('retryCreateInAssembly :: reconciled existing complete Assembly file', {
-        rowId: failedSync.id,
-        assemblyFileId: failedSync.assemblyFileId,
-      })
-      return false
-    }
+  if (!existing) return true
 
-    // Still pending and young — likely a legit in-flight upload, retry later.
-    const ageMs = Date.now() - failedSync.createdAt.getTime()
-    if (ageMs < STUCK_PENDING_THRESHOLD_MS) {
-      await mapFilesService.markFailure(
-        failedSync.id,
-        'retryCreateInAssembly: Assembly file still pending upload, will retry next sweep',
-      )
-      return false
-    }
-
-    // Abandoned. Null the id before deleting so the file.deleted webhook can't
-    // match this row and race the re-create.
-    await mapFilesService.updateFileMap(
-      { assemblyFileId: null },
-      eq(fileFolderSync.id, failedSync.id),
-    )
-    await copilotApi.deleteFile(failedSync.assemblyFileId)
-    logger.info('retryCreateInAssembly :: deleted stale pending Assembly file before re-create', {
+  if (existing.status === 'completed') {
+    // Last attempt finished but never reached markUpdated — reconcile.
+    await mapFilesService.markUpdated(failedSync.id, {
+      assemblyFileId: failedSync.assemblyFileId,
+      contentHash: entry.content_hash ?? null,
+    })
+    await mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+    logger.info('retryCreateInAssembly :: reconciled existing complete Assembly file', {
       rowId: failedSync.id,
       assemblyFileId: failedSync.assemblyFileId,
-      ageMs,
     })
-    return true
-  } catch (error) {
-    if (!isCopilotApiError(error) || error.status !== 404) {
-      throw error
-    }
-    // 404 → file is already gone; proceed to the create path.
-    return true
+    return false
   }
+
+  // Still pending and young — likely a legit in-flight upload, retry later.
+  const ageMs = Date.now() - failedSync.createdAt.getTime()
+  if (ageMs < STUCK_PENDING_THRESHOLD_MS) {
+    await mapFilesService.markFailure(
+      failedSync.id,
+      'retryCreateInAssembly: Assembly file still pending upload, will retry next sweep',
+    )
+    return false
+  }
+
+  // Abandoned. Null the id before deleting so the file.deleted webhook can't
+  // match this row and race the re-create.
+  await mapFilesService.updateFileMap(
+    { assemblyFileId: null },
+    eq(fileFolderSync.id, failedSync.id),
+  )
+  await copilotApi.deleteFile(failedSync.assemblyFileId)
+  logger.info('retryCreateInAssembly :: deleted stale pending Assembly file before re-create', {
+    rowId: failedSync.id,
+    assemblyFileId: failedSync.assemblyFileId,
+    ageMs,
+  })
+  return true
 }
 
 const getDropboxConnection = async (portalId: string) => {
