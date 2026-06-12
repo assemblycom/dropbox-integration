@@ -5,13 +5,26 @@ import type { ClientUser } from '@/lib/copilot/models/ClientUser.model'
 import { useRealtime } from '@/lib/supabase/hooks/useRealtime'
 import { useUserChannel } from './useUserChannel'
 
+// Curated broadcast payload built by broadcast_channel_sync_status() (camelCased).
+type ChannelSyncStatusBroadcast = Pick<
+  ChannelSyncSelectType,
+  | 'id'
+  | 'portalId'
+  | 'assemblyChannelId'
+  | 'dbxRootPath'
+  | 'status'
+  | 'totalFilesCount'
+  | 'syncedFilesCount'
+  | 'lastSyncedAt'
+>
+
 export const useRealtimeSync = (user: ClientUser) => {
   const { setUserChannel } = useUserChannel()
 
   // this function calculates the percentage of synced files for a particular channel
   const calculateSyncedPercentage = (
     tempMapList: MapList[],
-    newPayload: ChannelSyncSelectType,
+    newPayload: ChannelSyncStatusBroadcast,
   ): { [key: string]: number } => {
     const index = tempMapList.findIndex(
       (mapItem) =>
@@ -32,7 +45,7 @@ export const useRealtimeSync = (user: ClientUser) => {
     `channel_sync:${user.portalId}`,
     'sync_update',
     (payload) => {
-      const newPayload = camelcaseKeys(payload) as ChannelSyncSelectType
+      const newPayload = camelcaseKeys(payload) as ChannelSyncStatusBroadcast
 
       setUserChannel((prev) => ({
         ...prev,
