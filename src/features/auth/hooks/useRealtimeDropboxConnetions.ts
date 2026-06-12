@@ -1,19 +1,22 @@
 import { useAuthContext } from '@auth/hooks/useAuth'
-import type { DropboxConnection } from '@/db/schema/dropboxConnections.schema'
 import type { ClientUser } from '@/lib/copilot/models/ClientUser.model'
 import { useRealtime } from '@/lib/supabase/hooks/useRealtime'
+
+// Curated broadcast payload built by broadcast_dropbox_connection_status().
+type DropboxConnectionStatusBroadcast = {
+  id: string
+  portal_id: string
+  status: boolean
+}
 
 export const useRealtimeDropboxConnections = (user: ClientUser) => {
   const { updateAuth } = useAuthContext()
 
-  return useRealtime<DropboxConnection>(
-    user.portalId,
-    'dropbox_connections',
-    `portal_id=eq.${user.portalId}`,
-    'UPDATE',
+  return useRealtime<DropboxConnectionStatusBroadcast>(
+    `dropbox_connection:${user.portalId}`,
+    'connection_update',
     (payload) => {
-      const newPayload = payload.new as DropboxConnection
-      updateAuth({ connectionStatus: newPayload.status })
+      updateAuth({ connectionStatus: payload.status })
     },
   )
 }
