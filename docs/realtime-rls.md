@@ -68,8 +68,18 @@ using (
 Manually run file `supabase/snippets/2026-06-12-rls_and_anon_policy_to_realtime.sql` to
 enable RLS on all tables and create the policy.
 
-No per-portal scoping is possible (anon has no JWT). That's fine here because the broadcast
-payloads contain no secrets.
+**Accepted trade-off — broadcasts are not scoped per portal.** The policy matches
+`channel_sync:%` / `dropbox_connection:%`, not the subscriber's own portal. Per-portal
+scoping is impossible here: the anon key carries no JWT, so there's no identity to match a
+topic against (`auth.uid()` is null). So any anon client that knows or guesses another
+portal's ID can subscribe to `channel_sync:<that_portal_id>` and receive its
+`dbx_root_path`, sync counts, and `assembly_channel_id`. These are **not credentials**, but
+they are business-sensitive — that visibility is the accepted cost of an anon-only realtime
+path.
+
+> ⚠️ Because topics are world-readable within their prefix, the payloads MUST stay
+> non-sensitive. Do not add credentials, tokens, cursors, or account/namespace IDs to the
+> `realtime.send()` calls in the triggers. Anything broadcast is readable cross-portal.
 
 ### 4. Client subscribes to the private channel
 
@@ -95,3 +105,7 @@ supabase.channel(topic, { config: { private: true } })
 | Curated payload | only non-secret columns ever leave the DB |
 | Private channel + policy | anon receives only our two topics |
 | `postgres` role `BYPASSRLS` | server sync jobs unaffected |
+
+Not protected: cross-portal isolation. Broadcasts are readable by any anon client that knows
+the portal ID — accepted because payloads carry only business-sensitive (not secret) fields.
+See the trade-off note above before widening any payload.
