@@ -32,6 +32,7 @@ begin
 end;
 $$;
 
+drop trigger if exists trg_broadcast_channel_sync_status on public.channel_sync;
 create trigger trg_broadcast_channel_sync_status
 after update on public.channel_sync
 for each row
@@ -59,6 +60,7 @@ begin
 end;
 $$;
 
+drop trigger if exists trg_broadcast_dropbox_connection_status on public.dropbox_connections;
 create trigger trg_broadcast_dropbox_connection_status
 after update on public.dropbox_connections
 for each row
