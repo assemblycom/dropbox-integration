@@ -1,5 +1,6 @@
 'use client'
 
+import { REALTIME_LISTEN_TYPES } from '@supabase/supabase-js'
 import { useEffect, useMemo, useRef } from 'react'
 import getSupabaseClient from '@/lib/supabase/SupabaseClient'
 
@@ -7,7 +8,7 @@ import getSupabaseClient from '@/lib/supabase/SupabaseClient'
  * Subscribes to a DB-emitted Supabase Broadcast topic. The channel name MUST
  * equal the topic the trigger's realtime.send() targets.
  */
-export const useRealtime = <TPayload,>(
+export const useRealtime = <TPayload extends Record<string, unknown>>(
   topic: string,
   event: string,
   onMessage: (payload: TPayload) => unknown,
@@ -24,14 +25,9 @@ export const useRealtime = <TPayload,>(
 
     const channel = supabase
       .channel(topic, { config: { private: true } })
-      .on(
-        // biome-ignore lint/suspicious/noExplicitAny: broadcast event typing is loose in supabase-js
-        'broadcast' as any,
-        { event },
-        (message: { payload: TPayload }) => {
-          latestCallback.current(message.payload)
-        },
-      )
+      .on<TPayload>(REALTIME_LISTEN_TYPES.BROADCAST, { event }, (message) => {
+        latestCallback.current(message.payload)
+      })
       .subscribe()
 
     return () => {
