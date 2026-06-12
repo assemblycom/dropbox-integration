@@ -1,53 +1,41 @@
 'use client'
 
-import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { useEffect, useMemo, useRef } from 'react'
 import getSupabaseClient from '@/lib/supabase/SupabaseClient'
-import { generateRandomString } from '@/utils/random'
-
-type RealtimeEvent = 'INSERT' | 'UPDATE' | 'DELETE' | '*'
 
 /**
- * Subscribes to Postgres changes for a single table.
- * Generic over TRow to keep typing reusable across tables.
+ * Subscribes to a DB-emitted Supabase Broadcast topic. The channel name MUST
+ * equal the topic the trigger's realtime.send() targets.
  */
-export const useRealtime = <T extends Record<string, unknown>>(
-  portalId: string,
-  table: string,
-  filter: string,
-  event: RealtimeEvent,
-  onEvent: (payload: RealtimePostgresChangesPayload<T>) => unknown,
+export const useRealtime = <TPayload,>(
+  topic: string,
+  event: string,
+  onMessage: (payload: TPayload) => unknown,
 ) => {
   const supabase = useMemo(() => getSupabaseClient(), [])
-  const latestCallback = useRef<typeof onEvent>(onEvent)
-  const channelIdRef = useRef<string>(generateRandomString(16))
+  const latestCallback = useRef<typeof onMessage>(onMessage)
 
   useEffect(() => {
-    latestCallback.current = onEvent
-  }, [onEvent])
+    latestCallback.current = onMessage
+  }, [onMessage])
 
   useEffect(() => {
-    if (!portalId) return
-
-    const channelName = `realtime_${table}_${channelIdRef.current}`
+    if (!topic) return
 
     const channel = supabase
-      .channel(channelName)
-      .on<T>(
-        'postgres_changes',
-        {
-          // biome-ignore lint/suspicious/noExplicitAny: event is totally safe
-          event: event as any,
-          schema: 'public',
-          table,
-          filter,
+      .channel(topic, { config: { private: true } })
+      .on(
+        // biome-ignore lint/suspicious/noExplicitAny: broadcast event typing is loose in supabase-js
+        'broadcast' as any,
+        { event },
+        (message: { payload: TPayload }) => {
+          latestCallback.current(message.payload)
         },
-        latestCallback.current,
       )
       .subscribe()
 
     return () => {
       void channel.unsubscribe()
     }
-  }, [supabase, portalId, table, event, filter])
+  }, [supabase, topic, event])
 }

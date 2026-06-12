@@ -28,13 +28,11 @@ export const useRealtimeSync = (user: ClientUser) => {
     return { [index]: totalPercentage > 100 ? 100 : totalPercentage }
   }
 
-  return useRealtime<ChannelSyncSelectType>(
-    user.portalId,
-    'channel_sync',
-    `portal_id=eq.${user.portalId}`,
-    'UPDATE',
+  return useRealtime<Record<string, unknown>>(
+    `channel_sync:${user.portalId}`,
+    'sync_update',
     (payload) => {
-      const newPayload = camelcaseKeys(payload.new) as ChannelSyncSelectType
+      const newPayload = camelcaseKeys(payload) as ChannelSyncSelectType
 
       setUserChannel((prev) => ({
         ...prev,

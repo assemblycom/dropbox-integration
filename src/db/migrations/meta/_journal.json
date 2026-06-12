@@ -92,6 +92,13 @@
       "when": 1779788469229,
       "tag": "20260526094109_add_unique_indexes_on_portal_channel_assembly_and_dbx_file",
       "breakpoints": false
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1781165517451,
+      "tag": "20260611081157_realtime_broadcast_triggers",
+      "breakpoints": false
     }
   ]
 }
