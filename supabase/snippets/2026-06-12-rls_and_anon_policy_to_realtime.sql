@@ -1,3 +1,6 @@
+-- Ensure RLS is on (Supabase default) so the policy below isn't a silent no-op.
+alter table realtime.messages enable row level security;
+
 -- Let anon receive private broadcasts, scoped to our two topics (payloads carry no secrets).
 drop policy if exists "anon_receive_curated_broadcasts" on realtime.messages;
 create policy "anon_receive_curated_broadcasts"
