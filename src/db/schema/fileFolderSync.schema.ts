@@ -1,4 +1,4 @@
-import { type InferInsertModel, type InferSelectModel, relations, sql } from 'drizzle-orm'
+import { type InferInsertModel, type InferSelectModel, relations, type SQL, sql } from 'drizzle-orm'
 import {
   check,
   integer,
@@ -35,6 +35,9 @@ export const fileFolderSync = pgTable(
         onUpdate: 'cascade',
       }),
     itemPath: varchar(),
+    // Read-only lower(item_path) mirror: gives the case-insensitive path index a
+    // real column to target (drizzle's onConflict rejects expressions).
+    itemPathLower: varchar().generatedAlwaysAs((): SQL => sql`lower(${fileFolderSync.itemPath})`),
     object: ObjectEnum().default(ObjectType.FILE).notNull(),
     contentHash: varchar(),
     dbxFileId: varchar(),
@@ -51,17 +54,17 @@ export const fileFolderSync = pgTable(
       'file_folder_sync_pending_action_target_consistency',
       sql`(${table.pendingAction} IS NULL) = (${table.pendingActionTarget} IS NULL)`,
     ),
-    // NOTE: any `ON CONFLICT` clause that targets these indexes MUST repeat
-    // the partial predicate exactly (`deleted_at IS NULL AND <file_id> IS NOT NULL`)
-    // or Postgres throws "no unique or exclusion constraint matching the
-    // ON CONFLICT specification". Pick the predicate matching the conflict
-    // column you're using.
+    // Inserts dedupe on the path index; any ON CONFLICT must repeat the targeted
+    // index's partial predicate exactly or Postgres rejects it.
     uniqueIndex('file_folder_sync_portal_channel_assembly_unique')
       .on(table.portalId, table.channelSyncId, table.assemblyFileId)
       .where(sql`${table.deletedAt} IS NULL AND ${table.assemblyFileId} IS NOT NULL`),
     uniqueIndex('file_folder_sync_portal_channel_dbx_unique')
       .on(table.portalId, table.channelSyncId, table.dbxFileId)
       .where(sql`${table.deletedAt} IS NULL AND ${table.dbxFileId} IS NOT NULL`),
+    uniqueIndex('file_folder_sync_portal_channel_path_unique')
+      .on(table.portalId, table.channelSyncId, table.itemPathLower)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.itemPath} IS NOT NULL`),
   ],
 )
 
