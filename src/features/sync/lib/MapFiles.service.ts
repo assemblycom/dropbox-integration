@@ -76,10 +76,8 @@ export class MapFilesService extends AuthenticatedDropboxService {
   }
 
   /**
-   * Insert a file/folder map row; returns null on conflict. Parallel siblings
-   * race to create their shared parent folder and get the same assemblyFileId,
-   * so onConflictDoNothing dedupes the second insert (OUT-3800). WHERE must
-   * mirror the partial unique index predicate in fileFolderSync.schema.ts.
+   * Insert a file/folder map row; null on conflict. Dedupes on the path index
+   * (parallel folder-create siblings race, OUT-3800).
    */
   async insertFileMap(payload: FileSyncCreateType): Promise<FileSyncSelectType | null> {
     logger.info('MapFilesService#insertFileMap :: Inserting file map', payload)
@@ -91,16 +89,16 @@ export class MapFilesService extends AuthenticatedDropboxService {
         target: [
           fileFolderSync.portalId,
           fileFolderSync.channelSyncId,
-          fileFolderSync.assemblyFileId,
+          fileFolderSync.itemPathLower,
         ],
-        where: sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.assemblyFileId} IS NOT NULL`,
+        where: sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.itemPath} IS NOT NULL`,
       })
       .returning()
     logger.info('MapFilesService#insertFileMap :: Inserted file map', mappedFile)
     return mappedFile ?? null
   }
 
-  /** Pre-insert a create-pending tombstone row. Returns null if the conflict target already has a live row. */
+  /** Pre-insert a create-pending tombstone row. Returns null if a live row already exists for this path. */
   async insertCreatePending(payload: {
     channelSyncId: string
     itemPath: string
@@ -111,17 +109,18 @@ export class MapFilesService extends AuthenticatedDropboxService {
   }): Promise<FileSyncSelectType | null> {
     logger.info('MapFilesService#insertCreatePending', payload)
 
-    // WHERE must mirror the matching partial unique index in fileFolderSync.schema.ts.
-    const fileIdColumn =
-      payload.target === PendingActionTarget.DROPBOX
-        ? fileFolderSync.assemblyFileId
-        : fileFolderSync.dbxFileId
-
-    const conflictColumns = [fileFolderSync.portalId, fileFolderSync.channelSyncId, fileIdColumn]
-    const conflictWhere = sql`${fileFolderSync.deletedAt} IS NULL AND ${fileIdColumn} IS NOT NULL`
+    // Both directions dedupe on the path index (item_path is the only id present
+    // in both); WHERE mirrors the index's partial predicate.
+    const conflictColumns = [
+      fileFolderSync.portalId,
+      fileFolderSync.channelSyncId,
+      fileFolderSync.itemPathLower,
+    ]
+    const conflictWhere = sql`${fileFolderSync.deletedAt} IS NULL AND ${fileFolderSync.itemPath} IS NOT NULL`
 
     const [inserted] = await db
       .insert(fileFolderSync)
+      // itemPathLower is GENERATED ALWAYS — never write it.
       .values({
         portalId: this.user.portalId,
         channelSyncId: payload.channelSyncId,
@@ -141,7 +140,27 @@ export class MapFilesService extends AuthenticatedDropboxService {
       })
       .returning()
 
-    return inserted ?? null
+    if (inserted) return inserted
+
+    // A row already exists for this path: Dropbox sent the file under a new id.
+    // Update dbx_file_id to the new one so later lookups still find this row.
+    // IS DISTINCT FROM skips the write when the id hasn't changed.
+    if (payload.target === PendingActionTarget.ASSEMBLY && payload.dbxFileId) {
+      await db
+        .update(fileFolderSync)
+        .set({ dbxFileId: payload.dbxFileId })
+        .where(
+          and(
+            eq(fileFolderSync.portalId, this.user.portalId),
+            eq(fileFolderSync.channelSyncId, payload.channelSyncId),
+            sql`lower(${fileFolderSync.itemPath}) = lower(${payload.itemPath})`,
+            isNull(fileFolderSync.deletedAt),
+            sql`${fileFolderSync.dbxFileId} IS DISTINCT FROM ${payload.dbxFileId}`,
+          ),
+        )
+    }
+
+    return null
   }
 
   async deleteFileMap(id: string): Promise<void> {
@@ -263,7 +282,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
       and(
         eq(fileFolderSync.channelSyncId, channelSyncId),
         eq(fileFolderSync.dbxFileId, dbxId),
-        eq(fileFolderSync.itemPath, path),
+        sql`lower(${fileFolderSync.itemPath}) = lower(${path})`,
         isNotNull(fileFolderSync.assemblyFileId),
       ) as WhereClause,
     )
@@ -313,7 +332,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
     const mappedFiles = await this.getAllFileMaps(
       and(
         eq(fileFolderSync.channelSyncId, channelSyncId),
-        eq(fileFolderSync.itemPath, dbxPath),
+        sql`lower(${fileFolderSync.itemPath}) = lower(${dbxPath})`,
         isNotNull(fileFolderSync.assemblyFileId),
       ) as WhereClause,
     )
