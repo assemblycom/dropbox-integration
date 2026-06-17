@@ -69,6 +69,9 @@ export const handleWebhookEvent = async (req: NextRequest) => {
     case DISPATCHABLE_HANDLEABLE_EVENT.FileCreated:
     case DISPATCHABLE_HANDLEABLE_EVENT.FolderCreated:
       if (!existingFile && !pendingCreate) {
+        // When a file is replaced in Assembly, it first triggers file delete and add. These webhooks can dispatch parallely.
+        // This causes add to fail if delete is not completed yet. So we wait for a bit before creating the file.
+        await sleep(5000)
         logger.info('AssemblyWebhookService#handleWebhookEvent :: File does not exist, creating')
         await assemblyWebhookService.handleFileCreated(webhookEvent)
       }
