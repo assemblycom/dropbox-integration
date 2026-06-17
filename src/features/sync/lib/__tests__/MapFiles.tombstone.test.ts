@@ -203,23 +203,23 @@ describe('insertFileMap', () => {
     dbxFileId: null,
   }
 
-  it('dedupes on (portal, channel, assemblyFileId) with the partial-index predicate', async () => {
+  it('dedupes on (portal, channel, item_path_lower) with the path partial-index predicate', async () => {
     await service.insertFileMap(folderPayload)
 
     expect(onConflictSpy).toHaveBeenCalledTimes(1)
     const opts = onConflictSpy.mock.calls[0][0] as { target: unknown; where: unknown }
 
-    // Conflict target must be the existing assembly unique index columns.
+    // Conflict target must be the path unique index columns.
     const targetCols = (opts.target as unknown[]).map((c) => (c as { name: string }).name).join(' ')
     expect(targetCols).toMatch(/portal[_]?id/i)
     expect(targetCols).toMatch(/channel[_]?sync[_]?id/i)
-    expect(targetCols).toMatch(/assembly[_]?file[_]?id/i)
+    expect(targetCols).toMatch(/item[_]?path[_]?lower/i)
 
-    // WHERE must mirror the partial index predicate exactly.
+    // WHERE must mirror the path partial index predicate.
     const where = sqlText(opts.where)
     expect(where).toMatch(/deleted[_]?at/i)
     expect(where).toMatch(/IS NULL/i)
-    expect(where).toMatch(/assembly[_]?file[_]?id/i)
+    expect(where).toMatch(/item[_]?path/i)
     expect(where).toMatch(/IS NOT NULL/i)
   })
 
@@ -252,6 +252,108 @@ describe('insertCreatePending', () => {
     expect(payload.pendingAction).toBe(PendingAction.CREATE)
     expect(payload.pendingActionTarget).toBe(PendingActionTarget.ASSEMBLY)
     expect(payload.pendingActionLastAttemptAt).toBeInstanceOf(Date)
+  })
+})
+
+describe('insertCreatePending — path-index conflict target', () => {
+  const base = {
+    channelSyncId: 'cs-1',
+    itemPath: '/folder/file.txt',
+    object: ObjectType.FILE,
+    assemblyFileId: null as string | null,
+    dbxFileId: 'd-new' as string | null,
+  }
+
+  it('conflict-targets (portal, channel, item_path_lower) with the path partial predicate', async () => {
+    await service.insertCreatePending({ ...base, target: PendingActionTarget.ASSEMBLY })
+
+    expect(onConflictSpy).toHaveBeenCalledTimes(1)
+    const opts = onConflictSpy.mock.calls[0][0] as { target: unknown[]; where: unknown }
+
+    const targetCols = opts.target.map((c) => (c as { name: string }).name).join(' ')
+    expect(targetCols).toMatch(/portal[_]?id/i)
+    expect(targetCols).toMatch(/channel[_]?sync[_]?id/i)
+    expect(targetCols).toMatch(/item[_]?path[_]?lower/i)
+
+    const where = sqlText(opts.where)
+    expect(where).toMatch(/deleted[_]?at/i)
+    expect(where).toMatch(/IS NULL/i)
+    expect(where).toMatch(/item[_]?path/i)
+    expect(where).toMatch(/IS NOT NULL/i)
+  })
+
+  it('Dropbox→Assembly conflict: refreshes dbx_file_id (guarded by IS DISTINCT FROM) and returns null', async () => {
+    insertReturning = [] // simulate onConflictDoNothing no-op
+    const result = await service.insertCreatePending({
+      ...base,
+      target: PendingActionTarget.ASSEMBLY,
+    })
+
+    expect(result).toBeNull()
+    expect(setSpy).toHaveBeenCalledTimes(1)
+    const payload = setSpy.mock.calls[0][0] as Record<string, unknown>
+    expect(payload.dbxFileId).toBe('d-new')
+    expect(payload.pendingAction).toBeUndefined()
+    expect(payload.pendingActionLastAttemptAt).toBeUndefined()
+
+    expect(whereSpy).toHaveBeenCalledTimes(1)
+    const where = sqlText(whereSpy.mock.calls[0][0])
+    expect(where).toMatch(/lower/i)
+    expect(where).toMatch(/item[_]?path/i)
+    expect(where).toMatch(/IS DISTINCT FROM/i)
+    expect(where).toMatch(/portal[_]?id/i)
+    expect(where).toMatch(/channel[_]?sync[_]?id/i)
+  })
+
+  it('Assembly→Dropbox conflict: no refresh (dbx_file_id is null) and returns null', async () => {
+    insertReturning = []
+    const result = await service.insertCreatePending({
+      ...base,
+      dbxFileId: null,
+      assemblyFileId: 'asm-1',
+      target: PendingActionTarget.DROPBOX,
+    })
+
+    expect(result).toBeNull()
+    expect(setSpy).not.toHaveBeenCalled()
+  })
+
+  it('Assembly→Dropbox conflict with a non-null dbxFileId still does NOT refresh', async () => {
+    insertReturning = [] // simulate path conflict
+    const result = await service.insertCreatePending({
+      ...base,
+      dbxFileId: 'd-new',
+      assemblyFileId: 'asm-1',
+      target: PendingActionTarget.DROPBOX,
+    })
+
+    expect(result).toBeNull()
+    expect(setSpy).not.toHaveBeenCalled()
+  })
+
+  it('Assembly→Dropbox also conflict-targets the path index (direction-agnostic)', async () => {
+    await service.insertCreatePending({
+      ...base,
+      dbxFileId: null,
+      assemblyFileId: 'asm-1',
+      target: PendingActionTarget.DROPBOX,
+    })
+
+    expect(onConflictSpy).toHaveBeenCalledTimes(1)
+    const opts = onConflictSpy.mock.calls[0][0] as { target: unknown[] }
+    const targetCols = opts.target.map((c) => (c as { name: string }).name).join(' ')
+    expect(targetCols).toMatch(/item[_]?path[_]?lower/i)
+  })
+
+  it('no conflict: returns the inserted row and performs no refresh', async () => {
+    insertReturning = [{ id: 'row-1' }]
+    const result = await service.insertCreatePending({
+      ...base,
+      target: PendingActionTarget.ASSEMBLY,
+    })
+
+    expect(result).toEqual({ id: 'row-1' })
+    expect(setSpy).not.toHaveBeenCalled()
   })
 })
 
