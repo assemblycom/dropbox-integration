@@ -10,7 +10,11 @@ import {
   PendingActionTarget,
 } from '@/db/constants'
 import type { DropboxConnectionTokens } from '@/db/schema/dropboxConnections.schema'
-import { type FileSyncCreateType, fileFolderSync } from '@/db/schema/fileFolderSync.schema'
+import {
+  type FileSyncCreateType,
+  type FileSyncSelectType,
+  fileFolderSync,
+} from '@/db/schema/fileFolderSync.schema'
 import APIError from '@/errors/APIError'
 import { DBX_URL_PATH } from '@/features/sync/constant'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
@@ -34,7 +38,6 @@ type LeafCreateParams = {
   assemblyChannelId: string
   itemPath: string
   channelSyncId: string
-  dbxRootPath: string
   entry: DropboxFileListFolderSingleEntry
 }
 
@@ -136,7 +139,6 @@ export class SyncService extends AuthenticatedDropboxService {
             channelSyncId,
             entry,
             basePath,
-            dbxRootPath,
           )
         }),
       )
@@ -153,7 +155,6 @@ export class SyncService extends AuthenticatedDropboxService {
     channelSyncId: string,
     entry: DropboxFileListFolderSingleEntry,
     basePath: string,
-    dbxRootPath: string,
   ) {
     logger.info(
       'SyncService#createAndUploadFileToAssembly :: Creating and uploading file to Assembly for channel',
@@ -166,7 +167,6 @@ export class SyncService extends AuthenticatedDropboxService {
         assemblyChannelId,
         itemPath,
         channelSyncId,
-        dbxRootPath,
         entry,
       })
       return
@@ -198,7 +198,7 @@ export class SyncService extends AuthenticatedDropboxService {
 
   /** Path already mapped: recreate the file in Assembly only when its content changed. */
   private async resyncLeafOnContentChange(params: LeafCreateParams): Promise<void> {
-    const { itemPath, channelSyncId, dbxRootPath, entry } = params
+    const { itemPath, channelSyncId, entry } = params
     const existing = await this.mapFilesService.getDbxMappedFileFromPath(itemPath, channelSyncId)
 
     if (!existing) {
@@ -235,7 +235,8 @@ export class SyncService extends AuthenticatedDropboxService {
       dbxFileId: entry.id,
     })
 
-    await this.removeFileFromAssembly(channelSyncId, dbxRootPath, entry)
+    // Delete the row we already resolved — no re-lookup, so the deletion can't silently miss.
+    await this.removeAssemblyFileForRow(existing)
     const recreated = await this.insertLeafPending(channelSyncId, itemPath, entry.id)
     if (recreated) {
       await this.driveAssemblyCreate(recreated.id, params)
@@ -444,8 +445,13 @@ export class SyncService extends AuthenticatedDropboxService {
       getPathFromRoot(entry.path_display, dbxRootPath),
     )
     if (!mappedFile) return
+    await this.removeAssemblyFileForRow(mappedFile)
+  }
+
+  /** Delete a resolved row's Assembly file and soft-delete the row. */
+  private async removeAssemblyFileForRow(mappedFile: FileSyncSelectType) {
     if (!mappedFile.assemblyFileId) {
-      logger.warn('removeFileFromAssembly :: row missing assemblyFileId, skipping', {
+      logger.warn('removeAssemblyFileForRow :: row missing assemblyFileId, skipping', {
         rowId: mappedFile.id,
       })
       return

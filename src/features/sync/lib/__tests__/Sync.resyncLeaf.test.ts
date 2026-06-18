@@ -37,7 +37,6 @@ const params = {
   assemblyChannelId: 'ch-1',
   itemPath: '/birthday.png',
   channelSyncId: 'cs-1',
-  dbxRootPath: '/root',
   entry: baseEntry,
 }
 
@@ -60,7 +59,13 @@ beforeEach(() => {
   insertSpy = vi.spyOn(service.mapFilesService, 'insertCreatePending')
   getPathSpy = vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath')
   completeSpy = vi.spyOn(service, 'completePendingAssemblyCreate').mockResolvedValue(undefined)
-  removeSpy = vi.spyOn(service, 'removeFileFromAssembly').mockResolvedValue(undefined)
+  // resync deletes via the private removeAssemblyFileForRow (the resolved row), not removeFileFromAssembly.
+  removeSpy = vi
+    .spyOn(
+      service as unknown as { removeAssemblyFileForRow: (r: unknown) => Promise<void> },
+      'removeAssemblyFileForRow',
+    )
+    .mockResolvedValue(undefined)
 })
 
 describe('createLeafFileInAssembly', () => {
@@ -135,14 +140,13 @@ describe('resyncLeafOnContentChange (via createLeafFileInAssembly path conflict)
     insertSpy
       .mockResolvedValueOnce(null) // first insert: path conflict
       .mockResolvedValueOnce(row({ id: 'row-2' })) // recreate insert after removal
-    getPathSpy.mockResolvedValueOnce(row({ assemblyFileId: 'a1', contentHash: 'old' }))
+    getPathSpy.mockResolvedValueOnce(row({ id: 'row-1', assemblyFileId: 'a1', contentHash: 'old' }))
 
     await leaf.createLeafFileInAssembly({ ...params, entry: { ...baseEntry, content_hash: 'new' } })
 
+    // Deletes the already-resolved row (no re-lookup), then recreates.
     expect(removeSpy).toHaveBeenCalledWith(
-      'cs-1',
-      '/root',
-      expect.objectContaining({ id: 'id:new', content_hash: 'new' }),
+      expect.objectContaining({ id: 'row-1', assemblyFileId: 'a1' }),
     )
     expect(insertSpy).toHaveBeenCalledTimes(2)
     expect(completeSpy).toHaveBeenCalledWith(expect.objectContaining({ pendingRowId: 'row-2' }))
