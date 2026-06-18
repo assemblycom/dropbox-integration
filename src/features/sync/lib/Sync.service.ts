@@ -30,6 +30,14 @@ import { bidirectionalMasterSync } from '@/trigger/processFileSync'
 import { appendDateTimeToFilePath, buildPathArray, getPathFromRoot } from '@/utils/filePath'
 import { normalizeError } from '@/utils/normalizeError'
 
+type LeafCreateParams = {
+  assemblyChannelId: string
+  itemPath: string
+  channelSyncId: string
+  dbxRootPath: string
+  entry: DropboxFileListFolderSingleEntry
+}
+
 export class SyncService extends AuthenticatedDropboxService {
   readonly mapFilesService: MapFilesService
 
@@ -128,6 +136,7 @@ export class SyncService extends AuthenticatedDropboxService {
             channelSyncId,
             entry,
             basePath,
+            dbxRootPath,
           )
         }),
       )
@@ -144,6 +153,7 @@ export class SyncService extends AuthenticatedDropboxService {
     channelSyncId: string,
     entry: DropboxFileListFolderSingleEntry,
     basePath: string,
+    dbxRootPath: string,
   ) {
     logger.info(
       'SyncService#createAndUploadFileToAssembly :: Creating and uploading file to Assembly for channel',
@@ -152,7 +162,13 @@ export class SyncService extends AuthenticatedDropboxService {
 
     const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
     if (isLeafFile) {
-      await this.createLeafFileInAssembly({ assemblyChannelId, itemPath, channelSyncId, entry })
+      await this.createLeafFileInAssembly({
+        assemblyChannelId,
+        itemPath,
+        channelSyncId,
+        dbxRootPath,
+        entry,
+      })
       return
     }
 
@@ -167,47 +183,94 @@ export class SyncService extends AuthenticatedDropboxService {
     })
   }
 
-  /**
-   * Leaf-file create: pre-insert a create-pending row (which dedupes concurrent
-   * siblings via insertCreatePending's onConflict), then drive the Assembly
-   * create against that row, marking failure if it throws.
-   */
-  private async createLeafFileInAssembly(params: {
-    assemblyChannelId: string
-    itemPath: string
-    channelSyncId: string
-    entry: DropboxFileListFolderSingleEntry
-  }): Promise<void> {
-    const { assemblyChannelId, itemPath, channelSyncId, entry } = params
+  /** Create a leaf file in Assembly. If the path already has a row, re-sync only on content change. */
+  private async createLeafFileInAssembly(params: LeafCreateParams): Promise<void> {
+    const { itemPath, channelSyncId, entry } = params
+    const pending = await this.insertLeafPending(channelSyncId, itemPath, entry.id)
 
-    const pending = await this.mapFilesService.insertCreatePending({
+    if (!pending) {
+      await this.resyncLeafOnContentChange(params)
+      return
+    }
+
+    await this.driveAssemblyCreate(pending.id, params)
+  }
+
+  /** Path already mapped: recreate the file in Assembly only when its content changed. */
+  private async resyncLeafOnContentChange(params: LeafCreateParams): Promise<void> {
+    const { itemPath, channelSyncId, dbxRootPath, entry } = params
+    const existing = await this.mapFilesService.getDbxMappedFileFromPath(itemPath, channelSyncId)
+
+    if (!existing) {
+      // Insert lost the race, or the path's row isn't synced yet (no assemblyFileId).
+      logger.info('SyncService#resyncLeafOnContentChange :: no synced row for path, skipping', {
+        channelSyncId,
+        itemPath,
+        dbxFileId: entry.id,
+      })
+      return
+    }
+
+    if (!entry.content_hash || existing.contentHash === entry.content_hash) {
+      logger.info(
+        'SyncService#resyncLeafOnContentChange :: new contentHash not found or content unchanged, skipping',
+        {
+          channelSyncId,
+          itemPath,
+          dbxFileId: entry.id,
+        },
+      )
+      return
+    }
+
+    logger.info('SyncService#resyncLeafOnContentChange :: content changed, recreating', {
+      channelSyncId,
+      itemPath,
+      dbxFileId: entry.id,
+    })
+
+    await this.removeFileFromAssembly(channelSyncId, dbxRootPath, entry)
+    const recreated = await this.insertLeafPending(channelSyncId, itemPath, entry.id)
+    if (recreated) {
+      await this.driveAssemblyCreate(recreated.id, params)
+    } else {
+      // A concurrent insert re-took the path; that worker will drive the create.
+      logger.warn(
+        'SyncService#resyncLeafOnContentChange :: path re-taken concurrently, leaving recreate to the other worker',
+        {
+          channelSyncId,
+          itemPath,
+          dbxFileId: entry.id,
+        },
+      )
+    }
+  }
+
+  /** Insert a create-pending row for a leaf file. Null if the path is already taken. */
+  private insertLeafPending(channelSyncId: string, itemPath: string, dbxFileId: string) {
+    return this.mapFilesService.insertCreatePending({
       channelSyncId,
       itemPath,
       object: ObjectType.FILE,
       target: PendingActionTarget.ASSEMBLY,
       assemblyFileId: null,
-      dbxFileId: entry.id,
+      dbxFileId,
     })
+  }
 
-    if (!pending) {
-      logger.info('SyncService#createLeafFileInAssembly :: race lost, skipping', {
-        channelSyncId,
-        dbxFileId: entry.id,
-        itemPath,
-      })
-      return
-    }
-
+  /** Run the Assembly create for a pending row; record failure if it throws. */
+  private async driveAssemblyCreate(pendingRowId: string, params: LeafCreateParams): Promise<void> {
+    const { assemblyChannelId, itemPath, channelSyncId, entry } = params
     try {
       await this.completePendingAssemblyCreate({
-        pendingRowId: pending.id,
+        pendingRowId,
         itemPath,
         assemblyChannelId,
         channelSyncId,
         entry,
       })
     } catch (error) {
-      await this.mapFilesService.markFailure(pending.id, normalizeError(error))
+      await this.mapFilesService.markFailure(pendingRowId, normalizeError(error))
       throw error
     }
   }
