@@ -211,9 +211,15 @@ export class SyncService extends AuthenticatedDropboxService {
       return
     }
 
-    if (!entry.content_hash || existing.contentHash === entry.content_hash) {
+    // Recreate only on a confirmed change: both hashes present and differing. A missing
+    // hash on either side gives no baseline, so skip (matches the existing update path).
+    if (
+      !entry.content_hash ||
+      !existing.contentHash ||
+      existing.contentHash === entry.content_hash
+    ) {
       logger.info(
-        'SyncService#resyncLeafOnContentChange :: new contentHash not found or content unchanged, skipping',
+        'SyncService#resyncLeafOnContentChange :: content hash missing or unchanged, skipping',
         {
           channelSyncId,
           itemPath,

@@ -120,6 +120,17 @@ describe('resyncLeafOnContentChange (via createLeafFileInAssembly path conflict)
     expect(completeSpy).not.toHaveBeenCalled()
   })
 
+  it('skips when the stored row has no content_hash (no baseline to compare)', async () => {
+    insertSpy.mockResolvedValueOnce(null) // path conflict
+    getPathSpy.mockResolvedValueOnce(row({ assemblyFileId: 'a1', contentHash: null }))
+
+    // existing.contentHash is null → no baseline → can't confirm a change → skip
+    await leaf.createLeafFileInAssembly({ ...params, entry: { ...baseEntry, content_hash: 'new' } })
+
+    expect(removeSpy).not.toHaveBeenCalled()
+    expect(completeSpy).not.toHaveBeenCalled()
+  })
+
   it('removes and recreates when the content changed', async () => {
     insertSpy
       .mockResolvedValueOnce(null) // first insert: path conflict
