@@ -45,8 +45,11 @@ export const handleWebhookEvent = async (req: NextRequest) => {
   }
 
   const existingFile = await db.query.fileFolderSync.findFirst({
-    where: (fileFolderSync, { eq }) =>
-      eq(fileFolderSync.assemblyFileId, z.string().parse(webhookEvent.data.id)),
+    where: (fileFolderSync, { eq, and, isNull }) =>
+      and(
+        eq(fileFolderSync.assemblyFileId, z.string().parse(webhookEvent.data.id)),
+        isNull(fileFolderSync.deletedAt),
+      ),
   })
 
   logger.info('AssemblyWebhookService#handleWebhookEvent :: Existing file', existingFile)
