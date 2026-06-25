@@ -7,10 +7,10 @@ begin
   -- Skip no-op broadcasts (hot path writes dbx_cursor every page); emit only on UI-visible change.
   if (
     new.status, new.synced_files_count, new.total_files_count,
-    new.last_synced_at, new.dbx_root_path, new.assembly_channel_id
+    new.last_synced_at, new.dbx_root_path, new.assembly_channel_id, new.resyncing_at
   ) is distinct from (
     old.status, old.synced_files_count, old.total_files_count,
-    old.last_synced_at, old.dbx_root_path, old.assembly_channel_id
+    old.last_synced_at, old.dbx_root_path, old.assembly_channel_id, old.resyncing_at
   ) then
     perform realtime.send(
       jsonb_build_object(
@@ -21,7 +21,8 @@ begin
         'status', new.status,
         'total_files_count', new.total_files_count,
         'synced_files_count', new.synced_files_count,
-        'last_synced_at', new.last_synced_at
+        'last_synced_at', new.last_synced_at,
+        'resyncing_at', new.resyncing_at
       ),
       'sync_update',                       -- event
       'channel_sync:' || new.portal_id,    -- topic (per-portal)

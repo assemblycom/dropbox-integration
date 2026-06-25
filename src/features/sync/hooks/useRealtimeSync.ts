@@ -14,6 +14,7 @@ type ChannelSyncBroadcast = {
   total_files_count: number
   synced_files_count: number
   last_synced_at: Date | null
+  resyncing_at: Date | null
 }
 
 export const useRealtimeSync = (user: ClientUser) => {
