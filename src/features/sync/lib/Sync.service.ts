@@ -41,6 +41,24 @@ type LeafCreateParams = {
   entry: DropboxFileListFolderSingleEntry
 }
 
+type ExlcudedDropboxToAssemblySyncPayload = Omit<DropboxToAssemblySyncFilesPayload, 'opts'> & {
+  opts: Omit<DropboxToAssemblySyncFilesPayload['opts'], 'user' | 'connectionToken'>
+}
+
+type OriginalDropboxToAssemblySyncPayload = ExlcudedDropboxToAssemblySyncPayload & {
+  isRetry: false
+  pendingRowId?: never
+}
+
+type RetryDropboxToAssemblySyncPayload = ExlcudedDropboxToAssemblySyncPayload & {
+  isRetry: true
+  pendingRowId: string
+}
+
+type DiscriminatedDropboxToAssemblySyncParams =
+  | OriginalDropboxToAssemblySyncPayload
+  | RetryDropboxToAssemblySyncPayload
+
 export class SyncService extends AuthenticatedDropboxService {
   readonly mapFilesService: MapFilesService
 
@@ -109,7 +127,12 @@ export class SyncService extends AuthenticatedDropboxService {
     })
   }
 
-  async syncDropboxFilesToAssembly({ entry, opts }: DropboxToAssemblySyncFilesPayload) {
+  async syncDropboxFilesToAssembly({
+    entry,
+    opts,
+    isRetry,
+    pendingRowId,
+  }: DiscriminatedDropboxToAssemblySyncParams) {
     logger.info(
       'SyncService#syncDropboxFilesToAssembly :: Syncing Dropbox files to Assembly for channel',
       opts.assemblyChannelId,
@@ -125,37 +148,62 @@ export class SyncService extends AuthenticatedDropboxService {
       const lastItem = i === pathArray.length - 1
       const itemPath = pathArray[i]
 
-      uploadPromises.push(
-        copilotBottleneck.schedule(() => {
-          logger.info(
-            'SyncService#syncDropboxFilesToAssembly :: Syncing Dropbox files to Assembly for channel',
-            opts.assemblyChannelId,
-          )
-          return this.createAndUploadFileToAssembly(
-            assemblyChannelId,
-            itemPath,
-            lastItem,
-            fileObjectType as ObjectTypeValue,
-            channelSyncId,
-            entry,
-            basePath,
-          )
-        }),
+      logger.info(
+        'SyncService#syncDropboxFilesToAssembly :: Syncing Dropbox files to Assembly for channel',
+        opts.assemblyChannelId,
       )
+      const uploadPayload = {
+        assemblyChannelId,
+        itemPath,
+        lastItem,
+        fileObjectType: fileObjectType as ObjectTypeValue,
+        channelSyncId,
+        entry,
+        basePath,
+        isRetry,
+        pendingRowId,
+      }
+      const uploadFn = this.createAndUploadFileToAssembly.bind(this)
+
+      if (!isRetry) {
+        uploadPromises.push(
+          copilotBottleneck.schedule(() => {
+            return uploadFn(uploadPayload)
+          }),
+        )
+      } else {
+        // Retries are few and run sequentially (parent folders must exist before the
+        // leaf file), so we intentionally bypass copilotBottleneck here.
+        // todo: perf improvement — batch/throttle retry segments if volume grows.
+        await uploadFn(uploadPayload)
+      }
     }
 
-    await Promise.all(uploadPromises)
+    !isRetry && (await Promise.all(uploadPromises))
   }
 
-  async createAndUploadFileToAssembly(
-    assemblyChannelId: string,
-    itemPath: string,
-    lastItem: boolean,
-    fileObjectType: ObjectTypeValue,
-    channelSyncId: string,
-    entry: DropboxFileListFolderSingleEntry,
-    basePath: string,
-  ) {
+  private async createAndUploadFileToAssembly(args: {
+    assemblyChannelId: string
+    itemPath: string
+    lastItem: boolean
+    fileObjectType: ObjectTypeValue
+    channelSyncId: string
+    entry: DropboxFileListFolderSingleEntry
+    basePath: string
+    isRetry?: boolean
+    pendingRowId?: string
+  }) {
+    const {
+      assemblyChannelId,
+      itemPath,
+      lastItem,
+      fileObjectType,
+      channelSyncId,
+      entry,
+      basePath,
+      isRetry,
+      pendingRowId,
+    } = args
     logger.info(
       'SyncService#createAndUploadFileToAssembly :: Creating and uploading file to Assembly for channel',
       assemblyChannelId,
@@ -163,12 +211,21 @@ export class SyncService extends AuthenticatedDropboxService {
 
     const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
     if (isLeafFile) {
-      await this.createLeafFileInAssembly({
-        assemblyChannelId,
-        itemPath,
-        channelSyncId,
-        entry,
-      })
+      // If retrying, we dont need to create a new row for the file in mapping table. Directly create the file in assembly
+      !isRetry
+        ? await this.createLeafFileInAssembly({
+            assemblyChannelId,
+            itemPath,
+            channelSyncId,
+            entry,
+          })
+        : await this.completePendingAssemblyCreate({
+            pendingRowId: z.string().parse(pendingRowId),
+            itemPath,
+            assemblyChannelId,
+            channelSyncId,
+            entry,
+          })
       return
     }
 

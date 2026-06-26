@@ -10,7 +10,7 @@ const updateChannelMapSyncedFilesCount = vi.fn(async () => undefined)
 
 const retrieveFile = vi.fn()
 const deleteFile = vi.fn(async () => undefined)
-const completePendingAssemblyCreate = vi.fn(async () => undefined)
+const syncDropboxFilesToAssembly = vi.fn(async () => undefined)
 
 const filesGetMetadata = vi.fn()
 const channelSyncFindFirst = vi.fn()
@@ -58,7 +58,7 @@ vi.mock('@/lib/dropbox/DropboxClient', () => ({
 }))
 vi.mock('@/features/sync/lib/Sync.service', () => ({
   SyncService: class {
-    completePendingAssemblyCreate = completePendingAssemblyCreate
+    syncDropboxFilesToAssembly = syncDropboxFilesToAssembly
   },
 }))
 vi.mock('@/features/sync/lib/MapFiles.service', () => ({
@@ -127,7 +127,7 @@ describe('retryCreateInAssembly :: reconcile branches', () => {
       contentHash: 'hash-abc',
     })
     expect(updateChannelMapSyncedFilesCount).toHaveBeenCalledWith('cs-1')
-    expect(completePendingAssemblyCreate).not.toHaveBeenCalled()
+    expect(syncDropboxFilesToAssembly).not.toHaveBeenCalled()
     expect(deleteFile).not.toHaveBeenCalled()
   })
 
@@ -138,7 +138,7 @@ describe('retryCreateInAssembly :: reconcile branches', () => {
 
     expect(markFailure).toHaveBeenCalledWith('row-1', expect.stringContaining('still pending'))
     expect(deleteFile).not.toHaveBeenCalled()
-    expect(completePendingAssemblyCreate).not.toHaveBeenCalled()
+    expect(syncDropboxFilesToAssembly).not.toHaveBeenCalled()
   })
 
   it('reclaims (nulls id, deletes, re-creates) when pending past the cutoff', async () => {
@@ -149,7 +149,10 @@ describe('retryCreateInAssembly :: reconcile branches', () => {
 
     expect(updateFileMap).toHaveBeenCalledWith({ assemblyFileId: null }, expect.anything())
     expect(deleteFile).toHaveBeenCalledWith('asm-1')
-    expect(completePendingAssemblyCreate).toHaveBeenCalledTimes(1)
+    expect(syncDropboxFilesToAssembly).toHaveBeenCalledTimes(1)
+    expect(syncDropboxFilesToAssembly).toHaveBeenCalledWith(
+      expect.objectContaining({ isRetry: true, pendingRowId: 'row-1' }),
+    )
     // id is nulled before the delete fires
     expect(updateFileMap.mock.invocationCallOrder[0]).toBeLessThan(
       deleteFile.mock.invocationCallOrder[0],
@@ -168,7 +171,10 @@ describe('retryCreateInAssembly :: reconcile branches', () => {
 
     await retryFailedSyncsForPortal('p1', [makeRow()])
 
-    expect(completePendingAssemblyCreate).toHaveBeenCalledTimes(1)
+    expect(syncDropboxFilesToAssembly).toHaveBeenCalledTimes(1)
+    expect(syncDropboxFilesToAssembly).toHaveBeenCalledWith(
+      expect.objectContaining({ isRetry: true, pendingRowId: 'row-1' }),
+    )
     expect(markFailure).not.toHaveBeenCalled()
     expect(deleteFile).not.toHaveBeenCalled()
   })
@@ -177,7 +183,10 @@ describe('retryCreateInAssembly :: reconcile branches', () => {
     await retryFailedSyncsForPortal('p1', [makeRow({ assemblyFileId: null })])
 
     expect(retrieveFile).not.toHaveBeenCalled()
-    expect(completePendingAssemblyCreate).toHaveBeenCalledTimes(1)
+    expect(syncDropboxFilesToAssembly).toHaveBeenCalledTimes(1)
+    expect(syncDropboxFilesToAssembly).toHaveBeenCalledWith(
+      expect.objectContaining({ isRetry: true, pendingRowId: 'row-1' }),
+    )
   })
 
   it('soft-deletes the row when the Dropbox source no longer exists', async () => {
@@ -187,6 +196,6 @@ describe('retryCreateInAssembly :: reconcile branches', () => {
 
     expect(markDeleted).toHaveBeenCalledWith('row-1')
     expect(retrieveFile).not.toHaveBeenCalled()
-    expect(completePendingAssemblyCreate).not.toHaveBeenCalled()
+    expect(syncDropboxFilesToAssembly).not.toHaveBeenCalled()
   })
 })
