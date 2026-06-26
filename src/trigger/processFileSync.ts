@@ -186,7 +186,7 @@ export const syncDropboxFileToAssembly = task({
     return withErrorLogging<DropboxToAssemblySyncFilesPayload>(payload, async () => {
       const { opts, entry } = payload
       const syncService = new SyncService(opts.user, opts.connectionToken)
-      await syncService.syncDropboxFilesToAssembly({ entry, opts })
+      await syncService.syncDropboxFilesToAssembly({ entry, opts, isRetry: false })
     })
   },
 })

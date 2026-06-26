@@ -24,8 +24,8 @@ type PortalDeps = {
   mapFilesService: MapFilesService
 }
 
-// Pending uploads older than this are treated as abandoned and reclaimed.
-const STUCK_PENDING_THRESHOLD_MS = 24 * 60 * 60 * 1000
+// Pending uploads older than 12 hours are treated as abandoned and reclaimed.
+const STUCK_PENDING_THRESHOLD_MS = 12 * 60 * 60 * 1000
 
 /** Entry point for the scheduled sweep — per-row errors are recorded, never rethrown. */
 export const retryFailedSyncsForPortal = async (portalId: string, rows: FileSyncSelectType[]) => {
@@ -235,6 +235,7 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
 
   const dbxMeta = await getFileFromDropbox(dbxClient, failedSync.dbxFileId)
   if (!dbxMeta || dbxMeta['.tag'] !== 'file') {
+    // todo: delete only if tag is deleted??
     await mapFilesService.markDeleted(failedSync.id)
     return
   }
@@ -248,13 +249,17 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
   )
   if (!shouldRecreate) return
 
-  // Bypass syncDropboxFilesToAssembly — it would no-op against the existing row.
-  await syncService.completePendingAssemblyCreate({
-    pendingRowId: failedSync.id,
-    itemPath: failedSync.itemPath,
-    assemblyChannelId: channelSync.assemblyChannelId,
-    channelSyncId: channelSync.id,
+  // Use syncDropboxFilesToAssembly to create a new row for the failed sync.
+  // Didnt directly create failed file because the parent folder might not exist in assembly
+  await syncService.syncDropboxFilesToAssembly({
     entry,
+    opts: {
+      dbxRootPath: channelSync.dbxRootPath,
+      assemblyChannelId: channelSync.assemblyChannelId,
+      channelSyncId: channelSync.id,
+    },
+    isRetry: true,
+    pendingRowId: failedSync.id,
   })
 }
 
