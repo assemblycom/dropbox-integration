@@ -41,6 +41,18 @@ type LeafCreateParams = {
   entry: DropboxFileListFolderSingleEntry
 }
 
+type CreateAndUploadFileToAssemblyArgs = {
+  assemblyChannelId: string
+  itemPath: string
+  lastItem: boolean
+  fileObjectType: ObjectTypeValue
+  channelSyncId: string
+  entry: DropboxFileListFolderSingleEntry
+  basePath: string
+  isRetry?: boolean
+  pendingRowId?: string
+}
+
 type ExcludedDropboxToAssemblySyncPayload = Omit<DropboxToAssemblySyncFilesPayload, 'opts'> & {
   opts: Omit<DropboxToAssemblySyncFilesPayload['opts'], 'user' | 'connectionToken'>
 }
@@ -143,15 +155,32 @@ export class SyncService extends AuthenticatedDropboxService {
     const basePath = entry.path_display.replace(dbxRootPath, '') // removes the base folder path
     const pathArray = buildPathArray(basePath) // to create a folders hierarchy if not exists
 
+    const existingFolderRows = await this.mapFilesService.getAllFileMaps(
+      and(
+        eq(fileFolderSync.channelSyncId, channelSyncId),
+        eq(fileFolderSync.object, ObjectType.FOLDER),
+      ) as WhereClause,
+    )
+    const existingFolderPaths = existingFolderRows.map((file) => file.itemPath)
+
     const uploadPromises = []
     for (let i = 0; i < pathArray.length; i++) {
       const lastItem = i === pathArray.length - 1
       const itemPath = pathArray[i]
 
-      logger.info(
-        'SyncService#syncDropboxFilesToAssembly :: Syncing Dropbox files to Assembly for channel',
-        opts.assemblyChannelId,
-      )
+      if (existingFolderPaths.includes(itemPath)) {
+        logger.info('SyncService#syncDropboxFilesToAssembly :: Skipping existing folder', {
+          itemPath,
+        })
+        continue
+      }
+
+      logger.info('SyncService#syncDropboxFilesToAssembly :: Processing path segment', {
+        itemPath,
+        lastItem,
+        isRetry,
+      })
+      const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
       const uploadPayload = {
         assemblyChannelId,
         itemPath,
@@ -161,7 +190,8 @@ export class SyncService extends AuthenticatedDropboxService {
         entry,
         basePath,
         isRetry,
-        pendingRowId,
+        // pendingRowId identifies the leaf-file row only; folder segments never consume it.
+        pendingRowId: isLeafFile ? pendingRowId : undefined,
       }
       const uploadFn = this.createAndUploadFileToAssembly.bind(this)
 
@@ -178,20 +208,12 @@ export class SyncService extends AuthenticatedDropboxService {
       }
     }
 
-    !isRetry && (await Promise.all(uploadPromises))
+    if (!isRetry) {
+      await Promise.all(uploadPromises)
+    }
   }
 
-  private async createAndUploadFileToAssembly(args: {
-    assemblyChannelId: string
-    itemPath: string
-    lastItem: boolean
-    fileObjectType: ObjectTypeValue
-    channelSyncId: string
-    entry: DropboxFileListFolderSingleEntry
-    basePath: string
-    isRetry?: boolean
-    pendingRowId?: string
-  }) {
+  private async createAndUploadFileToAssembly(args: CreateAndUploadFileToAssemblyArgs) {
     const {
       assemblyChannelId,
       itemPath,
