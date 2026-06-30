@@ -161,14 +161,14 @@ export class SyncService extends AuthenticatedDropboxService {
         eq(fileFolderSync.object, ObjectType.FOLDER),
       ) as WhereClause,
     )
-    const existingFolderPaths = existingFolderRows.map((file) => file.itemPath)
+    const existingFolderPaths = existingFolderRows.map((file) => file.itemPathLower)
 
     const uploadPromises = []
     for (let i = 0; i < pathArray.length; i++) {
       const lastItem = i === pathArray.length - 1
       const itemPath = pathArray[i]
 
-      if (existingFolderPaths.includes(itemPath)) {
+      if (existingFolderPaths.includes(itemPath.toLowerCase())) {
         logger.info('SyncService#syncDropboxFilesToAssembly :: Skipping existing folder', {
           itemPath,
         })
