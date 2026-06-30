@@ -234,8 +234,7 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
   }
 
   const dbxMeta = await getFileFromDropbox(dbxClient, failedSync.dbxFileId)
-  if (!dbxMeta || dbxMeta['.tag'] !== 'file') {
-    // todo: delete only if tag is deleted??
+  if (!dbxMeta || dbxMeta['.tag'] === 'deleted') {
     await mapFilesService.markDeleted(failedSync.id)
     return
   }
@@ -249,8 +248,7 @@ const retryCreateInAssembly = async (failedSync: FileSyncSelectType, deps: Porta
   )
   if (!shouldRecreate) return
 
-  // Use syncDropboxFilesToAssembly to create a new row for the failed sync.
-  // Didnt directly create failed file because the parent folder might not exist in assembly
+  // Go through syncDropboxFilesToAssembly so parent folders get created first.
   await syncService.syncDropboxFilesToAssembly({
     entry,
     opts: {
@@ -275,8 +273,7 @@ const reconcileExistingAssemblyFile = async (
 
   if (!failedSync.assemblyFileId) return true
 
-  // 404 → file is already gone; proceed to the create path. Other errors
-  // propagate so the task can retry instead of being silently swallowed.
+  // 404 → file is gone, so create it. Other errors re-throw so the task retries.
   const existing = await copilotApi.retrieveFile(failedSync.assemblyFileId).catch((err) => {
     if (isCopilotApiError(err) && err.status === 404) return null
     throw err
@@ -368,7 +365,17 @@ const getFileFromDropbox = async (dbxClient: DropboxClient, dropboxFileId: strin
   if (!dropboxFileId) return null
   try {
     return (await dbxClient.getDropboxClient().filesGetMetadata({ path: dropboxFileId })).result
-  } catch (_err) {
-    return null
+  } catch (error) {
+    // null only for "not found". Other errors re-throw so the row is retried, not deleted.
+    const dbxError =
+      error instanceof DropboxResponseError
+        ? (error.error as { error?: { path?: { '.tag'?: string } } } | undefined)
+        : undefined
+    const isNotFound =
+      error instanceof DropboxResponseError &&
+      error.status === 409 &&
+      dbxError?.error?.path?.['.tag'] === 'not_found'
+    if (isNotFound) return null
+    throw error
   }
 }

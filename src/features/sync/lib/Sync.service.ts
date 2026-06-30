@@ -41,16 +41,16 @@ type LeafCreateParams = {
   entry: DropboxFileListFolderSingleEntry
 }
 
-type ExlcudedDropboxToAssemblySyncPayload = Omit<DropboxToAssemblySyncFilesPayload, 'opts'> & {
+type ExcludedDropboxToAssemblySyncPayload = Omit<DropboxToAssemblySyncFilesPayload, 'opts'> & {
   opts: Omit<DropboxToAssemblySyncFilesPayload['opts'], 'user' | 'connectionToken'>
 }
 
-type OriginalDropboxToAssemblySyncPayload = ExlcudedDropboxToAssemblySyncPayload & {
+type OriginalDropboxToAssemblySyncPayload = ExcludedDropboxToAssemblySyncPayload & {
   isRetry: false
   pendingRowId?: never
 }
 
-type RetryDropboxToAssemblySyncPayload = ExlcudedDropboxToAssemblySyncPayload & {
+type RetryDropboxToAssemblySyncPayload = ExcludedDropboxToAssemblySyncPayload & {
   isRetry: true
   pendingRowId: string
 }
@@ -172,9 +172,8 @@ export class SyncService extends AuthenticatedDropboxService {
           }),
         )
       } else {
-        // Retries are few and run sequentially (parent folders must exist before the
-        // leaf file), so we intentionally bypass copilotBottleneck here.
-        // todo: perf improvement — batch/throttle retry segments if volume grows.
+        // Retries are few and run in order (parent folders first), so skip the bottleneck.
+        // todo: batch/throttle retry segments if volume grows.
         await uploadFn(uploadPayload)
       }
     }
@@ -211,7 +210,7 @@ export class SyncService extends AuthenticatedDropboxService {
 
     const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
     if (isLeafFile) {
-      // If retrying, we dont need to create a new row for the file in mapping table. Directly create the file in assembly
+      // On retry the row already exists, so just create the file in assembly.
       !isRetry
         ? await this.createLeafFileInAssembly({
             assemblyChannelId,
