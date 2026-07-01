@@ -88,7 +88,9 @@ describe('DropboxClient#_downloadFile contentLength', () => {
     mockedFetch.mockResolvedValue(makeResponse({ 'Dropbox-API-Result': 'not-json' }) as never)
 
     const client = makeClient()
-    await expect(client._downloadFile(downloadArgs)).rejects.toThrow(/Could not read size/)
+    await expect(client._downloadFile(downloadArgs)).rejects.toThrow(
+      /Could not parse Dropbox-API-Result/,
+    )
   })
 
   it.each([
@@ -102,6 +104,8 @@ describe('DropboxClient#_downloadFile contentLength', () => {
     )
 
     const client = makeClient()
-    await expect(client._downloadFile(downloadArgs)).rejects.toThrow(/Could not read size/)
+    await expect(client._downloadFile(downloadArgs)).rejects.toThrow(
+      /Invalid size in Dropbox-API-Result/,
+    )
   })
 })
