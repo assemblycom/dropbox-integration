@@ -66,6 +66,17 @@ describe('DropboxClient#_downloadFile contentLength', () => {
     expect(contentLength).toBe('5000')
   })
 
+  it('accepts a zero size for empty files', async () => {
+    mockedFetch.mockResolvedValue(
+      makeResponse({ 'Dropbox-API-Result': JSON.stringify({ size: 0 }) }) as never,
+    )
+
+    const client = makeClient()
+    const { contentLength } = await client._downloadFile(downloadArgs)
+
+    expect(contentLength).toBe('0')
+  })
+
   it('reads the header case-insensitively', async () => {
     mockedFetch.mockResolvedValue(
       makeResponse({ 'DROPBOX-API-RESULT': JSON.stringify({ size: 42 }) }) as never,
