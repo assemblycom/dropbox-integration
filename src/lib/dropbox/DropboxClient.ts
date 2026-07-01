@@ -191,17 +191,22 @@ export class DropboxClient {
       )
     }
 
+    let parsed: { size?: unknown }
     try {
-      const size = (JSON.parse(apiResult) as { size?: unknown }).size
-      if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) {
-        throw new Error('size missing or not a non-negative integer')
-      }
-      return String(size)
+      parsed = JSON.parse(apiResult) as { size?: unknown }
     } catch (error) {
       throw new Error(
-        `DropboxClient#downloadFile. Could not read size from Dropbox-API-Result for file: ${filePath}. ${error instanceof Error ? error.message : String(error)}`,
+        `DropboxClient#downloadFile. Could not parse Dropbox-API-Result for file: ${filePath}. ${error instanceof Error ? error.message : String(error)}`,
       )
     }
+
+    const size = parsed.size
+    if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) {
+      throw new Error(
+        `DropboxClient#downloadFile. Invalid size in Dropbox-API-Result for file: ${filePath}: ${String(size)}`,
+      )
+    }
+    return String(size)
   }
 
   /**
