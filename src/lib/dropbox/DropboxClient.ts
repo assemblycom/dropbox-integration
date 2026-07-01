@@ -175,18 +175,33 @@ export class DropboxClient {
       )
     }
 
-    // Use the Content-Length from the download response as the upload size.
-    // This is the exact byte count about to be streamed, guaranteed to match
-    // what the upstream (S3) sees — unlike the size in `filesListFolder` entries,
-    // which can diverge from the downloaded stream for certain file types.
-    const contentLength = response.headers.get('content-length')
-    if (!contentLength) {
+    const contentLength = this.getContentLength(response, filePath)
+
+    return { body: response.body, contentLength }
+  }
+
+  // Use `size` from the `Dropbox-API-Result` header as the upload length.
+  // `Content-Length` is absent on gzipped (compressed) downloads, and when
+  // present reflects the compressed size — wrong for the decompressed body.
+  private getContentLength(response: NodeFetchResponse, filePath: string): string {
+    const apiResult = response.headers.get('dropbox-api-result')
+    if (!apiResult) {
       throw new Error(
-        `DropboxClient#downloadFile. Missing Content-Length header for file: ${filePath}`,
+        `DropboxClient#downloadFile. Missing Dropbox-API-Result header for file: ${filePath}`,
       )
     }
 
-    return { body: response.body, contentLength }
+    try {
+      const size = (JSON.parse(apiResult) as { size?: unknown }).size
+      if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) {
+        throw new Error('size missing or not a non-negative integer')
+      }
+      return String(size)
+    } catch (error) {
+      throw new Error(
+        `DropboxClient#downloadFile. Could not read size from Dropbox-API-Result for file: ${filePath}. ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
   }
 
   /**
