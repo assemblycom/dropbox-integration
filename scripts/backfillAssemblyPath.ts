@@ -1,0 +1,83 @@
+/**
+ * ONE-TIME backfill for `file_folder_sync.assembly_path` (OUT-3918). Reads each
+ * object's real path from Assembly (can't be recomputed from item_path) and stores
+ * it. Read-only against Assembly. Run manually: `pnpm ex scripts/backfillAssemblyPath.ts`
+ */
+import { and, eq, isNotNull, isNull } from 'drizzle-orm'
+import env from '@/config/server.env'
+import db from '@/db'
+import { channelSync } from '@/db/schema/channelSync.schema'
+import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
+import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
+import { ensureLeadingSlash } from '@/utils/filePath'
+
+// assemblyFileId -> real Assembly path for one channel (listFiles returns folders too).
+async function loadAssemblyPaths(
+  copilot: CopilotAPI,
+  assemblyChannelId: string,
+): Promise<Map<string, string>> {
+  const byId = new Map<string, string>()
+  let nextToken: string | undefined
+
+  do {
+    const page = await copilot.listFiles(assemblyChannelId, nextToken)
+    for (const item of page.data) byId.set(item.id, ensureLeadingSlash(item.path))
+    nextToken = page.nextToken
+  } while (nextToken)
+
+  console.info(`  channel ${assemblyChannelId}: ${byId.size} objects`)
+  return byId
+}
+
+async function main() {
+  const copilot = new CopilotAPI(env.COPILOT_API_KEY)
+
+  const channels = await db.query.channelSync.findMany({
+    where: isNull(channelSync.deletedAt),
+    columns: { id: true, assemblyChannelId: true, portalId: true },
+  })
+  console.info(`Backfilling assembly_path across ${channels.length} channels`)
+
+  let updated = 0
+  let missing = 0
+
+  for (const channel of channels) {
+    const pathById = await loadAssemblyPaths(copilot, channel.assemblyChannelId)
+
+    // Only rows that were actually created in Assembly and not yet backfilled.
+    const rows = await db.query.fileFolderSync.findMany({
+      where: and(
+        eq(fileFolderSync.channelSyncId, channel.id),
+        isNotNull(fileFolderSync.assemblyFileId),
+        isNull(fileFolderSync.assemblyPath),
+        isNull(fileFolderSync.deletedAt),
+      ),
+      columns: { id: true, assemblyFileId: true, itemPath: true },
+    })
+
+    for (const row of rows) {
+      const assemblyFileId = row.assemblyFileId as string
+      const realPath = pathById.get(assemblyFileId)
+
+      if (!realPath) {
+        missing++
+        console.warn(`  no Assembly path for row ${row.id} (assemblyFileId=${assemblyFileId})`)
+        continue
+      }
+
+      await db
+        .update(fileFolderSync)
+        .set({ assemblyPath: realPath })
+        .where(eq(fileFolderSync.id, row.id))
+      updated++
+    }
+  }
+
+  console.info(`Done. Updated ${updated} rows, ${missing} without a resolvable Assembly path.`)
+  process.exit(0)
+}
+
+main().catch((error) => {
+  console.error('backfillAssemblyPath failed', error)
+  process.exit(1)
+})
