@@ -45,7 +45,6 @@ import {
 } from '@/lib/copilot/types'
 import logger from '@/lib/logger'
 import { withRetry } from '@/lib/withRetry'
-import { sanitizeFileNameForAssembly } from '@/utils/filePath'
 
 // Structural shape of the SDK's `ApiError` (declared in
 // `copilot-node-sdk/dist/codegen/api/core/ApiError`). The class itself is not
@@ -223,13 +222,13 @@ export class CopilotAPI {
     channelId: string,
     fileType: ObjectTypeValue,
   ): Promise<CreateFileType> {
-    const saniztedPath = sanitizeFileNameForAssembly(path)
-    console.info(`CopilotAPI#_createFile. Path: ${saniztedPath}`)
+    // Names are validated upstream (SyncService); path passes through unchanged.
+    console.info(`CopilotAPI#_createFile. Path: ${path}`)
 
     const createFileResponse = await this.copilot.createFile({
       fileType,
       requestBody: {
-        path: saniztedPath,
+        path,
         channelId,
       },
     })

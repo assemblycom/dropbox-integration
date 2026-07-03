@@ -106,6 +106,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
     target: PendingActionTargetValue
     assemblyFileId: string | null
     dbxFileId: string | null
+    assemblyPath?: string | null
   }): Promise<FileSyncSelectType | null> {
     logger.info('MapFilesService#insertCreatePending', payload)
 
@@ -127,6 +128,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
         assemblyFileId: payload.assemblyFileId,
         dbxFileId: payload.dbxFileId,
         itemPath: payload.itemPath,
+        assemblyPath: payload.assemblyPath ?? null,
         object: payload.object,
         contentHash: null,
         pendingAction: PendingAction.CREATE,
@@ -353,6 +355,22 @@ export class MapFilesService extends AuthenticatedDropboxService {
     )
 
     return mappedFile
+  }
+
+  /**
+   * The folder row whose Assembly path matches, used to recover its Dropbox itemPath.
+   * Doesn't require dbxFileId: a Dropbox-origin folder exists in Dropbox before we
+   * stamp its id, and the assemblyPath match already excludes null rows.
+   */
+  async getMappedFolderByAssemblyPath(assemblyPath: string, channelSyncId: string) {
+    const [folder] = await this.getAllFileMaps(
+      and(
+        eq(fileFolderSync.channelSyncId, channelSyncId),
+        eq(fileFolderSync.object, ObjectType.FOLDER),
+        sql`lower(${fileFolderSync.assemblyPath}) = lower(${assemblyPath})`,
+      ) as WhereClause,
+    )
+    return folder
   }
 
   async getAssemblyMappedFileIds(channelSyncId: string) {
