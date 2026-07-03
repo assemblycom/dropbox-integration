@@ -113,6 +113,13 @@
       "when": 1782390322617,
       "tag": "20260625122522_add_resyncing_at_column_in_channel_sync_table",
       "breakpoints": false
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1782983911688,
+      "tag": "20260702091831_add_assembly_path",
+      "breakpoints": false
     }
   ]
 }

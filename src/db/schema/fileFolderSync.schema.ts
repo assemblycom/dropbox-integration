@@ -38,6 +38,9 @@ export const fileFolderSync = pgTable(
     // Read-only lower(item_path) mirror: gives the case-insensitive path index a
     // real column to target (drizzle's onConflict rejects expressions).
     itemPathLower: varchar().generatedAlwaysAs((): SQL => sql`lower(${fileFolderSync.itemPath})`),
+    // Actual path of the object in Assembly; diverges from itemPath (raw Dropbox
+    // path) for legacy/Assembly-origin names. New children build off this.
+    assemblyPath: varchar(),
     object: ObjectEnum().default(ObjectType.FILE).notNull(),
     contentHash: varchar(),
     dbxFileId: varchar(),

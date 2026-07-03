@@ -1,0 +1,1 @@
+ALTER TABLE "file_folder_sync" ADD COLUMN "assembly_path" varchar;
