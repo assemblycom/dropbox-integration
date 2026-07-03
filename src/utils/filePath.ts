@@ -1,6 +1,5 @@
 import * as p from 'node:path'
 import dayjs from 'dayjs'
-import unorm from 'unorm'
 import { ObjectType } from '@/db/constants'
 
 export function buildPathArray(path: string): string[] {
@@ -22,6 +21,16 @@ export function buildPathArray(path: string): string[] {
 export function getFolderPath(path: string, type: ObjectType) {
   if (type === ObjectType.FOLDER) return path
   return p.dirname(path)
+}
+
+// Assembly/Dropbox paths are always '/'-delimited logical paths, so use posix
+// semantics — the default `path` export splits on '\' on Windows.
+export function getParentPath(path: string): string {
+  return p.posix.dirname(path)
+}
+
+export function getBaseName(path: string): string {
+  return p.posix.basename(path)
 }
 
 export function appendDateTimeToFilePath(filePath: string): string {
@@ -81,18 +90,38 @@ export function sanitizePath(path: string) {
   return path.replace(/^\/+/, '')
 }
 
-export function sanitizeFileNameForAssembly(filename: string): string {
-  return unorm
-    .nfd(filename) // decompose accents
-    .replace(/[\u0300-\u036f]/g, '') // remove diacritics
-    .replace(/[^a-zA-Z0-9._/() -]/g, '_') // replace special chars with _
+// Normalize to exactly one leading slash. Assembly returns paths without one, but
+// we store/match assemblyPath and itemPath with a leading slash consistently.
+export function ensureLeadingSlash(path: string): string {
+  return `/${path.replace(/^\/+/, '')}`
 }
 
-export function getFaultyPath(filename: string): string {
-  return unorm
-    .nfd(filename) // decompose accents
-    .replace(/[\u0300-\u036f]/g, '') // remove diacritics
-    .replace(/[^a-zA-Z0-9._-]/g, '_') // replace special chars with _
-    .replace(/_+/g, '_') // collapse multiple _
-    .replace(/^_+|_+$/g, '') // trim _ from ends
+// Chars each target rejects within a name segment; `/` is enforced by segmenting.
+const DISALLOWED_CHARS = {
+  assembly: /[*=|@^]/,
+  dropbox: /\\/,
+} as const
+
+export type SyncTarget = keyof typeof DISALLOWED_CHARS
+
+// Place a child under its parent's stored full path by appending only the child's
+// leaf name. No parent path (top-level / brand-new subtree) → the raw child path.
+// Used both directions: parent assemblyPath + child, and parent itemPath + child.
+export function composeChildPath(parentPath: string | null | undefined, childPath: string): string {
+  if (!parentPath) return childPath
+  return `${parentPath}/${p.posix.basename(childPath)}`
+}
+
+// Distinct disallowed chars across all segments; empty string means valid.
+export function findDisallowedChars(path: string, target: SyncTarget): string {
+  const disallowed = DISALLOWED_CHARS[target]
+  const found = new Set<string>()
+
+  for (const segment of path.split('/')) {
+    for (const char of segment) {
+      if (disallowed.test(char)) found.add(char)
+    }
+  }
+
+  return [...found].join('')
 }

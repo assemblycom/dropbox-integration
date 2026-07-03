@@ -13,6 +13,7 @@ import { generateToken } from '@/lib/copilot/generateToken'
 import User from '@/lib/copilot/models/User.model'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import logger from '@/lib/logger'
+import { ensureLeadingSlash } from '@/utils/filePath'
 import { normalizeError } from '@/utils/normalizeError'
 
 type PortalDeps = {
@@ -285,6 +286,7 @@ const reconcileExistingAssemblyFile = async (
     // Last attempt finished but never reached markUpdated — reconcile.
     await mapFilesService.markUpdated(failedSync.id, {
       assemblyFileId: failedSync.assemblyFileId,
+      assemblyPath: ensureLeadingSlash(existing.path),
       contentHash: entry.content_hash ?? null,
     })
     await mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
