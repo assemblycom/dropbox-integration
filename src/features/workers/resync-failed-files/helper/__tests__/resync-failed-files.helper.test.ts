@@ -118,12 +118,14 @@ beforeEach(() => {
 
 describe('retryCreateInAssembly :: reconcile branches', () => {
   it('reconciles when the existing Assembly file is already completed', async () => {
-    retrieveFile.mockResolvedValue({ status: 'completed' })
+    // Assembly returns the path without a leading slash; we normalize on store.
+    retrieveFile.mockResolvedValue({ status: 'completed', path: 'folder/file.txt' })
 
     await retryFailedSyncsForPortal('p1', [makeRow()])
 
     expect(markUpdated).toHaveBeenCalledWith('row-1', {
       assemblyFileId: 'asm-1',
+      assemblyPath: '/folder/file.txt',
       contentHash: 'hash-abc',
     })
     expect(updateChannelMapSyncedFilesCount).toHaveBeenCalledWith('cs-1')
