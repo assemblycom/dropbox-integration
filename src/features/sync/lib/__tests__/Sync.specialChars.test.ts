@@ -106,9 +106,10 @@ describe('syncDropboxFilesToAssembly :: Assembly disallowed characters', () => {
   })
 
   it('does NOT skip when the disallowed char is only in an already-existing folder', async () => {
-    // The parent folder already exists (created before the rules changed).
+    // Synced folder (has assemblyFileId) that never got its dbxFileId stamped — the
+    // regression case: it must still be recognized as existing and not re-validated.
     vi.spyOn(service.mapFilesService, 'getAllFileMaps').mockResolvedValue([
-      { itemPathLower: '/re@port' },
+      { itemPathLower: '/re@port', assemblyFileId: 'a1', dbxFileId: null },
     ] as never)
     const uploadSpy = spyUpload()
 
@@ -121,6 +122,42 @@ describe('syncDropboxFilesToAssembly :: Assembly disallowed characters', () => {
     expect(errorSpy).not.toHaveBeenCalled()
     // The valid leaf under the existing folder still gets processed.
     expect(uploadSpy).toHaveBeenCalled()
+  })
+
+  it('re-processes a synced folder still missing its dbxFileId when it is its own entry', async () => {
+    // Folder synced as an intermediate (assemblyFileId set, dbxFileId null) now arrives
+    // as its own entry — must be processed so handleFolderCreatedCase can stamp dbxFileId,
+    // and must NOT be rejected despite the disallowed char.
+    vi.spyOn(service.mapFilesService, 'getAllFileMaps').mockResolvedValue([
+      { itemPathLower: '/re@port', assemblyFileId: 'a1', dbxFileId: null },
+    ] as never)
+    const uploadSpy = spyUpload()
+
+    await service.syncDropboxFilesToAssembly({
+      entry: { '.tag': 'folder', name: 're@port', path_display: '/root/re@port', id: 'id:f' },
+      opts,
+      isRetry: false,
+    } as never)
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(uploadSpy).toHaveBeenCalled()
+  })
+
+  it('skips a fully-mapped folder outright (dbxFileId present)', async () => {
+    vi.spyOn(service.mapFilesService, 'getAllFileMaps').mockResolvedValue([
+      { itemPathLower: '/re@port', assemblyFileId: 'a1', dbxFileId: 'd1' },
+    ] as never)
+    const uploadSpy = spyUpload()
+
+    await service.syncDropboxFilesToAssembly({
+      entry: { '.tag': 'folder', name: 're@port', path_display: '/root/re@port', id: 'id:f' },
+      opts,
+      isRetry: false,
+    } as never)
+
+    expect(errorSpy).not.toHaveBeenCalled()
+    // Fully mapped → skipped entirely, nothing scheduled.
+    expect(uploadSpy).not.toHaveBeenCalled()
   })
 
   it('proceeds for a valid name (accents allowed)', async () => {
