@@ -3,13 +3,35 @@
  * object's real path from Assembly (can't be recomputed from item_path) and stores
  * it. Read-only against Assembly. Run manually: `pnpm ex scripts/backfillAssemblyPath.ts`
  */
-import { and, eq, isNotNull, isNull } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import env from '@/config/server.env'
 import db from '@/db'
 import { channelSync } from '@/db/schema/channelSync.schema'
 import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import { ensureLeadingSlash } from '@/utils/filePath'
+
+// Rows per bulk UPDATE (2 params each, well under Postgres' parameter limit).
+const CHUNK_SIZE = 500
+
+// Update many rows in a single statement via UPDATE ... FROM (VALUES ...). Each
+// statement is atomic; combined with the `assembly_path IS NULL` filter, an
+// interrupted run is safe to just re-run (already-set rows are skipped).
+async function bulkUpdateAssemblyPaths(updates: { id: string; assemblyPath: string }[]) {
+  for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+    const chunk = updates.slice(i, i + CHUNK_SIZE)
+    const values = sql.join(
+      chunk.map((u) => sql`(${u.id}::uuid, ${u.assemblyPath}::varchar)`),
+      sql`, `,
+    )
+    await db.execute(sql`
+      UPDATE ${fileFolderSync} AS f
+      SET assembly_path = v.assembly_path
+      FROM (VALUES ${values}) AS v(id, assembly_path)
+      WHERE f.id = v.id
+    `)
+  }
+}
 
 // assemblyFileId -> real Assembly path for one channel (listFiles returns folders too).
 async function loadAssemblyPaths(
@@ -55,6 +77,7 @@ async function main() {
       columns: { id: true, assemblyFileId: true, itemPath: true },
     })
 
+    const updates: { id: string; assemblyPath: string }[] = []
     for (const row of rows) {
       const assemblyFileId = row.assemblyFileId as string
       const realPath = pathById.get(assemblyFileId)
@@ -64,13 +87,11 @@ async function main() {
         console.warn(`  no Assembly path for row ${row.id} (assemblyFileId=${assemblyFileId})`)
         continue
       }
-
-      await db
-        .update(fileFolderSync)
-        .set({ assemblyPath: realPath })
-        .where(eq(fileFolderSync.id, row.id))
-      updated++
+      updates.push({ id: row.id, assemblyPath: realPath })
     }
+
+    await bulkUpdateAssemblyPaths(updates)
+    updated += updates.length
   }
 
   console.info(`Done. Updated ${updated} rows, ${missing} without a resolvable Assembly path.`)
