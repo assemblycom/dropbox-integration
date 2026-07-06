@@ -48,13 +48,15 @@ type LeafCreateParams = {
   itemPath: string
   channelSyncId: string
   entry: DropboxFileListFolderSingleEntry
-  // Resync recreate: the object's existing Assembly path, used verbatim.
+  // Pre-resolved Assembly path (parent's assemblyPath + leaf); override is used verbatim on resync.
+  assemblyCreatePath: string
   assemblyPathOverride?: string
 }
 
 type CreateAndUploadFileToAssemblyArgs = {
   assemblyChannelId: string
   itemPath: string
+  assemblyCreatePath: string
   lastItem: boolean
   fileObjectType: ObjectTypeValue
   channelSyncId: string
@@ -163,27 +165,37 @@ export class SyncService extends AuthenticatedDropboxService {
 
     const { dbxRootPath, assemblyChannelId, channelSyncId } = opts
     const fileObjectType = entry['.tag']
-    const basePath = entry.path_display.replace(dbxRootPath, '') // removes the base folder path
+    const basePath = entry.path_display.replace(dbxRootPath, '')
 
-    const pathArray = buildPathArray(basePath) // to create a folders hierarchy if not exists
+    const pathArray = buildPathArray(basePath)
 
+    // assemblyFileId is set on every synced folder; dbxFileId only once it syncs as its
+    // own entry. resolvedByPath maps synced folders to their real (possibly diverged)
+    // Assembly path so new segments chain off it without a per-segment DB lookup.
     const existingFolderRows = await this.mapFilesService.getAllFileMaps(
       and(
         eq(fileFolderSync.channelSyncId, channelSyncId),
         eq(fileFolderSync.object, ObjectType.FOLDER),
-        isNotNull(fileFolderSync.dbxFileId), // exclude if no dbxFileId, need to update the record to store the dbxFileId
+        isNotNull(fileFolderSync.assemblyFileId),
       ) as WhereClause,
     )
-    const existingFolderPaths = existingFolderRows.map((file) => file.itemPathLower)
+    const resolvedByPath = new Map<string, string | null>()
+    const mappedFolderPaths = new Set<string>()
+    for (const file of existingFolderRows) {
+      if (!file.itemPathLower) continue
+      resolvedByPath.set(file.itemPathLower, file.assemblyPath)
+      if (file.dbxFileId) mappedFolderPaths.add(file.itemPathLower)
+    }
 
-    // Validate as we collect, and schedule only after the whole path checks out, so
-    // a skipped entry never leaves partially-created ancestor folders behind.
     const uploadPayloads: CreateAndUploadFileToAssemblyArgs[] = []
     for (let i = 0; i < pathArray.length; i++) {
       const lastItem = i === pathArray.length - 1
       const itemPath = pathArray[i]
+      const key = itemPath.toLowerCase()
 
-      if (existingFolderPaths.includes(itemPath.toLowerCase())) {
+      // Skip mapped folders, and synced folders unless this is their own entry (where they
+      // still need handleFolderCreatedCase to stamp dbxFileId).
+      if (mappedFolderPaths.has(key) || (resolvedByPath.has(key) && !lastItem)) {
         logger.info('SyncService#syncDropboxFilesToAssembly :: Skipping existing folder', {
           itemPath,
         })
@@ -192,10 +204,8 @@ export class SyncService extends AuthenticatedDropboxService {
 
       const isLeafFile = lastItem && fileObjectType === ObjectType.FILE
 
-      // Validate new folders only. An invalid folder means the whole entry can't land.
-      // The leaf FILE is validated in createLeafFileInAssembly (new files only) so an
-      // existing legacy-named file still reaches its resync path.
-      if (!isLeafFile) {
+      // Validate new folders only; leaf files are validated in createLeafFileInAssembly.
+      if (!isLeafFile && !resolvedByPath.has(key)) {
         const disallowed = findDisallowedChars(getBaseName(itemPath), 'assembly')
         if (disallowed) {
           const message =
@@ -208,7 +218,7 @@ export class SyncService extends AuthenticatedDropboxService {
             disallowed,
             target: 'assembly',
           })
-          // On retry the row exists; record the failure so it doesn't burn attempts silently.
+          // pendingRowId present ⇒ retry: record the terminal failure so it stops retrying.
           if (pendingRowId) {
             await this.mapFilesService.markFailure(pendingRowId, `${message} (${disallowed})`)
           }
@@ -216,34 +226,39 @@ export class SyncService extends AuthenticatedDropboxService {
         }
       }
 
-      logger.info('SyncService#syncDropboxFilesToAssembly :: Processing path segment', {
-        itemPath,
-        lastItem,
-        isRetry,
-      })
+      const seeded = resolvedByPath.get(key)
+      let assemblyCreatePath: string
+      if (seeded) {
+        assemblyCreatePath = seeded
+      } else {
+        const parentResolved = resolvedByPath.get(getParentPath(itemPath).toLowerCase())
+        assemblyCreatePath = composeChildPath(parentResolved, itemPath)
+        resolvedByPath.set(key, assemblyCreatePath)
+      }
+
       uploadPayloads.push({
         assemblyChannelId,
         itemPath,
+        assemblyCreatePath,
         lastItem,
         fileObjectType: fileObjectType as ObjectTypeValue,
         channelSyncId,
         entry,
         basePath,
         isRetry,
-        // pendingRowId identifies the leaf-file row only; folder segments never consume it.
         pendingRowId: isLeafFile ? pendingRowId : undefined,
       })
     }
 
+    // Pre-resolved paths mean segments don't depend on each other's row, so they can run
+    // concurrently (retries stay ordered).
     const uploadFn = this.createAndUploadFileToAssembly.bind(this)
-    // Create segments in order (parent before child) so each child's parent row is
-    // committed before we resolve its Assembly path from it — otherwise sibling
-    // creates could race and mis-place a new subtree under a legacy-diverged ancestor.
-    // Entries are already parallelized as separate tasks; the bottleneck still bounds
-    // global Copilot concurrency across them.
-    for (const payload of uploadPayloads) {
-      // Retries are few and run in order, so skip the bottleneck (todo: throttle if volume grows).
-      await (isRetry ? uploadFn(payload) : copilotBottleneck.schedule(() => uploadFn(payload)))
+    if (isRetry) {
+      for (const payload of uploadPayloads) await uploadFn(payload)
+    } else {
+      await Promise.all(
+        uploadPayloads.map((payload) => copilotBottleneck.schedule(() => uploadFn(payload))),
+      )
     }
   }
 
@@ -251,6 +266,7 @@ export class SyncService extends AuthenticatedDropboxService {
     const {
       assemblyChannelId,
       itemPath,
+      assemblyCreatePath,
       lastItem,
       fileObjectType,
       channelSyncId,
@@ -271,12 +287,13 @@ export class SyncService extends AuthenticatedDropboxService {
         ? await this.createLeafFileInAssembly({
             assemblyChannelId,
             itemPath,
+            assemblyCreatePath,
             channelSyncId,
             entry,
           })
         : await this.completePendingAssemblyCreate({
             pendingRowId: z.string().parse(pendingRowId),
-            itemPath,
+            assemblyCreatePath,
             assemblyChannelId,
             channelSyncId,
             entry,
@@ -287,6 +304,7 @@ export class SyncService extends AuthenticatedDropboxService {
     await this.createFolderInAssembly({
       assemblyChannelId,
       itemPath,
+      assemblyCreatePath,
       lastItem,
       tempFileType: lastItem ? fileObjectType : ObjectType.FOLDER,
       channelSyncId,
@@ -395,11 +413,12 @@ export class SyncService extends AuthenticatedDropboxService {
 
   /** Run the Assembly create for a pending row; record failure if it throws. */
   private async driveAssemblyCreate(pendingRowId: string, params: LeafCreateParams): Promise<void> {
-    const { assemblyChannelId, itemPath, channelSyncId, entry, assemblyPathOverride } = params
+    const { assemblyChannelId, assemblyCreatePath, channelSyncId, entry, assemblyPathOverride } =
+      params
     try {
       await this.completePendingAssemblyCreate({
         pendingRowId,
-        itemPath,
+        assemblyCreatePath,
         assemblyChannelId,
         channelSyncId,
         entry,
@@ -411,37 +430,27 @@ export class SyncService extends AuthenticatedDropboxService {
     }
   }
 
-  /**
-   * Build itemPath's Assembly create path under the parent folder row's stored
-   * assemblyPath, so new items land in the existing tree instead of orphaning.
-   * Falls back to the raw path for top-level items and brand-new subtrees.
-   */
-  private async resolveAssemblyCreatePath(
-    itemPath: string,
-    channelSyncId: string,
-  ): Promise<string> {
-    const parentPath = getParentPath(itemPath)
-    // Top-level path ('/foo') → dirname '/': no parent to resolve.
-    if (parentPath === '/' || parentPath === '.' || parentPath === itemPath) {
-      return itemPath
-    }
-
-    const parentRow = await this.mapFilesService.getDbxMappedFileFromPath(parentPath, channelSyncId)
-    return composeChildPath(parentRow?.assemblyPath, itemPath)
-  }
-
   /** Folder create: pre-check skips redundant creates, insertFileMap's onConflict is the race net (OUT-3800). */
   private async createFolderInAssembly(params: {
     assemblyChannelId: string
     itemPath: string
+    assemblyCreatePath: string
     lastItem: boolean
     tempFileType: ObjectTypeValue
     channelSyncId: string
     entry: DropboxFileListFolderSingleEntry
     basePath: string
   }): Promise<void> {
-    const { assemblyChannelId, itemPath, lastItem, tempFileType, channelSyncId, entry, basePath } =
-      params
+    const {
+      assemblyChannelId,
+      itemPath,
+      assemblyCreatePath,
+      lastItem,
+      tempFileType,
+      channelSyncId,
+      entry,
+      basePath,
+    } = params
 
     try {
       // A sibling may have already created this folder; skip the redundant create.
@@ -469,7 +478,6 @@ export class SyncService extends AuthenticatedDropboxService {
       }
 
       const copilotApi = new CopilotAPI(this.user.token)
-      const assemblyCreatePath = await this.resolveAssemblyCreatePath(itemPath, channelSyncId)
       const fileCreateResponse = await copilotApi.createFile(
         assemblyCreatePath,
         assemblyChannelId,
@@ -507,13 +515,31 @@ export class SyncService extends AuthenticatedDropboxService {
         error.body.message === 'Folder already exists'
       ) {
         console.info({ message: error.body.message, path: itemPath })
-        await this.handleFolderCreatedCase(
-          lastItem,
-          tempFileType,
+        // Row exists (concurrent winner) → just stamp dbxFileId. Otherwise recover the
+        // folder's id + path from Assembly so children resolve under it, not a duplicate.
+        const existing = await this.mapFilesService.getDbxMappedFileFromPath(
+          itemPath,
           channelSyncId,
-          basePath,
-          entry.id,
         )
+        if (existing) {
+          await this.handleFolderCreatedCase(
+            lastItem,
+            tempFileType,
+            channelSyncId,
+            basePath,
+            entry.id,
+          )
+        } else {
+          await this.recoverUnmappedAssemblyFolder({
+            assemblyChannelId,
+            itemPath,
+            assemblyCreatePath,
+            channelSyncId,
+            tempFileType,
+            lastItem,
+            entry,
+          })
+        }
         return
       }
       console.error(
@@ -523,29 +549,94 @@ export class SyncService extends AuthenticatedDropboxService {
     }
   }
 
+  /**
+   * Folder exists in Assembly but we have no row for it. Find it by its resolved path
+   * (no get-by-path API, so page listFiles) and insert a complete row.
+   */
+  private async recoverUnmappedAssemblyFolder(params: {
+    assemblyChannelId: string
+    itemPath: string
+    assemblyCreatePath: string
+    channelSyncId: string
+    tempFileType: ObjectTypeValue
+    lastItem: boolean
+    entry: DropboxFileListFolderSingleEntry
+  }): Promise<void> {
+    const {
+      assemblyChannelId,
+      itemPath,
+      assemblyCreatePath,
+      channelSyncId,
+      tempFileType,
+      lastItem,
+      entry,
+    } = params
+    const target = assemblyCreatePath.toLowerCase()
+    const copilotApi = new CopilotAPI(this.user.token)
+
+    let nextToken: string | undefined
+    do {
+      const page = await copilotApi.listFiles(assemblyChannelId, nextToken)
+      const match = page.data.find(
+        (f) =>
+          f.object === ObjectType.FOLDER && ensureLeadingSlash(f.path).toLowerCase() === target,
+      )
+      if (match) {
+        const inserted = await this.mapFilesService.insertFileMap({
+          channelSyncId,
+          itemPath,
+          assemblyPath: ensureLeadingSlash(match.path),
+          object: tempFileType,
+          assemblyFileId: match.id,
+          portalId: this.user.portalId,
+          dbxFileId: lastItem ? entry.id : null,
+        })
+        // Insert lost the race to a concurrent recovery: don't double-count; just make
+        // sure the winner's row gets this entry's dbxFileId stamped (if it's the leaf).
+        if (inserted) {
+          await this.mapFilesService.updateChannelMapSyncedFilesCount(channelSyncId)
+        } else {
+          await this.handleFolderCreatedCase(
+            lastItem,
+            tempFileType,
+            channelSyncId,
+            itemPath,
+            entry.id,
+          )
+        }
+        return
+      }
+      nextToken = page.nextToken
+    } while (nextToken)
+
+    logger.error(
+      'SyncService#recoverUnmappedAssemblyFolder :: folder reported existing but not found in Assembly',
+      { channelSyncId, itemPath, assemblyCreatePath },
+    )
+  }
+
   /** Drive a Dropbox→Assembly create against an existing pre-inserted row. Called by both syncDropboxFilesToAssembly's leaf branch and the sweeper's retryCreateInAssembly. */
   async completePendingAssemblyCreate(params: {
     pendingRowId: string
-    itemPath: string
     assemblyChannelId: string
     channelSyncId: string
     entry: DropboxFileListFolderSingleEntry
+    // Pre-resolved Assembly path (parent's assemblyPath + leaf); override wins on resync.
+    assemblyCreatePath: string
     assemblyPathOverride?: string
   }): Promise<void> {
     const {
       pendingRowId,
-      itemPath,
       assemblyChannelId,
       channelSyncId,
       entry,
+      assemblyCreatePath,
       assemblyPathOverride,
     } = params
     const copilotApi = new CopilotAPI(this.user.token)
 
-    const assemblyCreatePath =
-      assemblyPathOverride ?? (await this.resolveAssemblyCreatePath(itemPath, channelSyncId))
     const fileCreateResponse = await copilotApi.createFile(
-      assemblyCreatePath,
+      assemblyPathOverride ?? assemblyCreatePath,
       assemblyChannelId,
       ObjectType.FILE,
     )

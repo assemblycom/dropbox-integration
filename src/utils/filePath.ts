@@ -104,9 +104,8 @@ const DISALLOWED_CHARS = {
 
 export type SyncTarget = keyof typeof DISALLOWED_CHARS
 
-// Place a child under its parent's stored full path by appending only the child's
-// leaf name. No parent path (top-level / brand-new subtree) → the raw child path.
-// Used both directions: parent assemblyPath + child, and parent itemPath + child.
+// Append the child's leaf name to its parent's stored full path. No parent path
+// (top-level / brand-new subtree) → the raw child path.
 export function composeChildPath(parentPath: string | null | undefined, childPath: string): string {
   if (!parentPath) return childPath
   return `${parentPath}/${p.posix.basename(childPath)}`

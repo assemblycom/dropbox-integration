@@ -45,13 +45,44 @@ beforeEach(() => {
   service = new SyncService(user, connectionToken)
 })
 
-describe('completePendingAssemblyCreate :: assemblyPath resolution + storage', () => {
-  it("creates the child under the parent row's real assemblyPath and stores the returned path", async () => {
-    // Parent folder "John's Cafe" exists in Assembly under its old sanitized name.
-    vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue({
-      id: 'parent-row',
-      assemblyPath: '/John_s Cafe',
+describe('syncDropboxFilesToAssembly :: pre-resolves child paths from committed ancestors', () => {
+  const opts = { dbxRootPath: '/root', assemblyChannelId: 'ch-1', channelSyncId: 'cs-1' } as never
+
+  it('threads the diverged parent assemblyPath to the child without a per-segment lookup', async () => {
+    // Existing mapped folder: Dropbox "/John's Cafe" lives in Assembly as "/John_s Cafe".
+    vi.spyOn(service.mapFilesService, 'getAllFileMaps').mockResolvedValue([
+      {
+        itemPathLower: "/john's cafe",
+        assemblyPath: '/John_s Cafe',
+        assemblyFileId: 'a1',
+        dbxFileId: 'd1',
+      },
+    ] as never)
+    const getFromPath = vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath')
+    const uploadSpy = vi
+      .spyOn(
+        service as unknown as { createAndUploadFileToAssembly: (a: unknown) => Promise<void> },
+        'createAndUploadFileToAssembly',
+      )
+      .mockResolvedValue(undefined)
+
+    await service.syncDropboxFilesToAssembly({
+      entry,
+      opts,
+      isRetry: false,
     } as never)
+
+    // The leaf file's create path is composed from the parent's stored assemblyPath...
+    expect(uploadSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ assemblyCreatePath: '/John_s Cafe/file.txt' }),
+    )
+    // ...in-memory, so no per-segment DB resolution is needed.
+    expect(getFromPath).not.toHaveBeenCalled()
+  })
+})
+
+describe('completePendingAssemblyCreate :: creates at the pre-resolved path + stores it', () => {
+  it('creates at the pre-resolved assemblyCreatePath and stores the returned path', async () => {
     vi.spyOn(service.mapFilesService, 'updateFileMap').mockResolvedValue({} as never)
     const markUpdated = vi
       .spyOn(service.mapFilesService, 'markUpdated')
@@ -59,22 +90,19 @@ describe('completePendingAssemblyCreate :: assemblyPath resolution + storage', (
     vi.spyOn(service.mapFilesService, 'updateChannelMapSyncedFilesCount').mockResolvedValue(
       undefined as never,
     )
-
     // Assembly echoes back the path WITHOUT a leading slash.
     createFileMock.mockResolvedValue({ id: 'asm:1', path: 'John_s Cafe/file.txt' })
 
     await service.completePendingAssemblyCreate({
       pendingRowId: 'row-1',
-      itemPath: "/John's Cafe/file.txt",
+      assemblyCreatePath: '/John_s Cafe/file.txt',
       assemblyChannelId: 'ch-1',
       channelSyncId: 'cs-1',
       entry,
     })
 
-    // Created under the sanitized parent, not the raw Dropbox path.
     expect(createFileMock).toHaveBeenCalledWith('/John_s Cafe/file.txt', 'ch-1', 'file')
-    // Row records the real Assembly path, normalized to a leading slash so the
-    // reverse lookup (getMappedFolderByAssemblyPath) matches.
+    // Row records the real Assembly path, normalized to a leading slash.
     expect(markUpdated).toHaveBeenCalledWith(
       'row-1',
       expect.objectContaining({ assemblyPath: '/John_s Cafe/file.txt' }),
@@ -82,8 +110,6 @@ describe('completePendingAssemblyCreate :: assemblyPath resolution + storage', (
   })
 
   it('uses the assemblyPathOverride verbatim when provided (resync recreate)', async () => {
-    // No parent lookup should happen — the override wins.
-    const getParent = vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath')
     vi.spyOn(service.mapFilesService, 'updateFileMap').mockResolvedValue({} as never)
     vi.spyOn(service.mapFilesService, 'markUpdated').mockResolvedValue({} as never)
     vi.spyOn(service.mapFilesService, 'updateChannelMapSyncedFilesCount').mockResolvedValue(
@@ -93,38 +119,15 @@ describe('completePendingAssemblyCreate :: assemblyPath resolution + storage', (
 
     await service.completePendingAssemblyCreate({
       pendingRowId: 'row-1',
-      itemPath: '/John@s Cafe/report@.pdf',
+      assemblyCreatePath: '/John@s Cafe/report@.pdf',
       assemblyChannelId: 'ch-1',
       channelSyncId: 'cs-1',
       entry,
       assemblyPathOverride: '/John_s Cafe/report_.pdf',
-    } as never)
-
-    expect(createFileMock).toHaveBeenCalledWith('/John_s Cafe/report_.pdf', 'ch-1', 'file')
-    expect(getParent).not.toHaveBeenCalled()
-  })
-
-  it('falls back to the raw path when the parent has no stored assemblyPath', async () => {
-    vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue({
-      id: 'parent-row',
-      assemblyPath: null,
-    } as never)
-    vi.spyOn(service.mapFilesService, 'updateFileMap').mockResolvedValue({} as never)
-    vi.spyOn(service.mapFilesService, 'markUpdated').mockResolvedValue({} as never)
-    vi.spyOn(service.mapFilesService, 'updateChannelMapSyncedFilesCount').mockResolvedValue(
-      undefined as never,
-    )
-    createFileMock.mockResolvedValue({ id: 'asm:1', path: "/John's Cafe/file.txt" })
-
-    await service.completePendingAssemblyCreate({
-      pendingRowId: 'row-1',
-      itemPath: "/John's Cafe/file.txt",
-      assemblyChannelId: 'ch-1',
-      channelSyncId: 'cs-1',
-      entry,
     })
 
-    expect(createFileMock).toHaveBeenCalledWith("/John's Cafe/file.txt", 'ch-1', 'file')
+    // Override wins over the pre-resolved path.
+    expect(createFileMock).toHaveBeenCalledWith('/John_s Cafe/report_.pdf', 'ch-1', 'file')
   })
 })
 
