@@ -226,13 +226,13 @@ export class SyncService extends AuthenticatedDropboxService {
         }
       }
 
-      const seeded = resolvedByPath.get(key)
-      let assemblyCreatePath: string
-      if (seeded) {
-        assemblyCreatePath = seeded
-      } else {
-        const parentResolved = resolvedByPath.get(getParentPath(itemPath).toLowerCase())
-        assemblyCreatePath = composeChildPath(parentResolved, itemPath)
+      // Existing synced folders carry their stored assemblyPath; new segments chain off
+      // the parent's. (Backfill runs right after the migration, so a synced folder always
+      // has an assemblyPath by the time we resolve here.)
+      let assemblyCreatePath = resolvedByPath.get(key)
+      if (assemblyCreatePath == null) {
+        const parentPath = resolvedByPath.get(getParentPath(itemPath).toLowerCase())
+        assemblyCreatePath = composeChildPath(parentPath, itemPath)
         resolvedByPath.set(key, assemblyCreatePath)
       }
 
