@@ -74,6 +74,14 @@ describe('getPathFromRoot', () => {
   it('returns the path unchanged when the root is not a prefix (appears mid-path)', () => {
     expect(getPathFromRoot('/folder/root/file.txt', '/root')).toBe('/folder/root/file.txt')
   })
+
+  it('does not strip a partial segment match (root must end at a segment boundary)', () => {
+    expect(getPathFromRoot('/rootdir/file.txt', '/root')).toBe('/rootdir/file.txt')
+  })
+
+  it('returns an empty string when the path equals the root', () => {
+    expect(getPathFromRoot('/root', '/root')).toBe('')
+  })
 })
 
 describe('replaceSpecialCharactersWithSpace', () => {
