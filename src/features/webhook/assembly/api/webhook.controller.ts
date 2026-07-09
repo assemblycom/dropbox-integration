@@ -44,12 +44,10 @@ export const handleWebhookEvent = async (req: NextRequest) => {
     return NextResponse.json({})
   }
 
+  // Not included deleted_at null condition intentionally to avoid resyncing soft deleted files
   const existingFile = await db.query.fileFolderSync.findFirst({
-    where: (fileFolderSync, { eq, and, isNull }) =>
-      and(
-        eq(fileFolderSync.assemblyFileId, z.string().parse(webhookEvent.data.id)),
-        isNull(fileFolderSync.deletedAt),
-      ),
+    where: (fileFolderSync, { eq }) =>
+      eq(fileFolderSync.assemblyFileId, z.string().parse(webhookEvent.data.id)),
   })
 
   logger.info('AssemblyWebhookService#handleWebhookEvent :: Existing file', existingFile)
@@ -87,7 +85,7 @@ export const handleWebhookEvent = async (req: NextRequest) => {
       }
       break
     default:
-      if (existingFile) {
+      if (existingFile && existingFile.deletedAt === null) {
         //only proceed with deleting file if there is existing row in the filefoldersync table.
         await assemblyWebhookService.handleFileDeleted(webhookEvent)
       }
