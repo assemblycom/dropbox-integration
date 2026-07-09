@@ -48,8 +48,11 @@ export function appendDateTimeToFilePath(filePath: string): string {
 }
 
 export function getPathFromRoot(path: string, root: string) {
-  // Root is a prefix: only strip when the path actually starts with it.
-  return path.startsWith(root) ? path.slice(root.length) : path
+  // Root must end on a path-segment boundary: strip only when the character
+  // immediately after root is '/' or the path matches root exactly.
+  if (!path.startsWith(root)) return path
+  if (path.length !== root.length && path[root.length] !== '/') return path
+  return path.slice(root.length)
 }
 
 export function replaceSpecialCharactersWithSpace(str: string) {
