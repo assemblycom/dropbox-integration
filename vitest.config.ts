@@ -15,6 +15,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.{test,spec}.ts'],
+    // Integration tests run in a separate project (vitest.integration.config.ts)
+    // against a real Postgres container — keep them out of the fast unit run.
+    exclude: ['**/*.integration.test.ts', '**/node_modules/**'],
     setupFiles: ['./vitest.setup.ts'],
   },
 })
