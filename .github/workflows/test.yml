@@ -1,6 +1,9 @@
 name: Tests
 
-on: push
+# pull_request also covers fork PRs, which never trigger push upstream.
+on:
+  push:
+  pull_request:
 
 permissions:
   contents: read
