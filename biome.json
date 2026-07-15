@@ -64,5 +64,33 @@
       "semicolons": "asNeeded",
       "quoteStyle": "single"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/**", "!**/__tests__/**", "!**/*.test.ts", "!**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "**/__tests__/**",
+                      "**/test/**",
+                      "test/**",
+                      "**/*.test",
+                      "**/*.test.*"
+                    ],
+                    "message": "Production code must not import test files or the test harness (test/**, **/__tests__/**, *.test.*)."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
