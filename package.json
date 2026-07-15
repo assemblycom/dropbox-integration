@@ -71,6 +71,7 @@
     "drizzle-kit": "^0.31.4",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.5",
+    "msw": "^2.15.0",
     "server-only": "^0.0.1",
     "supabase": "^2.39.2",
     "tailwindcss": "^4",
