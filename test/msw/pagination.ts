@@ -4,11 +4,20 @@ import { COPILOT_HOST, DROPBOX_RPC_HOST } from './hosts'
 // Each paginator tracks only the offset (from the cursor / nextToken), so one
 // registration fakes one listing per test. Concurrent listings need separate ones.
 
+// A non-positive (or non-integer) pageSize yields empty pages that never advance
+// the offset while has_more stays true — a consumer would loop forever. Fail fast.
+function assertPositivePageSize(fn: string, pageSize: number): void {
+  if (!Number.isInteger(pageSize) || pageSize < 1) {
+    throw new Error(`${fn}: pageSize must be a positive integer, got ${pageSize}`)
+  }
+}
+
 // Caller passes entries; this owns the cursor/has_more protocol.
 export function paginateDropboxListFolder(
   entries: unknown[],
   { pageSize = 100 }: { pageSize?: number } = {},
 ): HttpHandler[] {
+  assertPositivePageSize('paginateDropboxListFolder', pageSize)
   const page = (offset: number) => {
     const slice = entries.slice(offset, offset + pageSize)
     const nextOffset = offset + slice.length
@@ -29,6 +38,7 @@ export function paginateCopilotListFiles(
   items: unknown[],
   { pageSize = 100 }: { pageSize?: number } = {},
 ): HttpHandler {
+  assertPositivePageSize('paginateCopilotListFiles', pageSize)
   return http.get(`${COPILOT_HOST}/v1/files`, ({ request }) => {
     const token = new URL(request.url).searchParams.get('nextToken')
     const offset = token ? Number(token.split(':')[1] ?? 0) : 0

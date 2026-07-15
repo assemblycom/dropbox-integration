@@ -146,4 +146,9 @@ describe('MSW harness — pagination', () => {
     } while (nextToken)
     expect(all).toHaveLength(250)
   })
+
+  it('rejects a non-positive pageSize instead of producing a non-progressing paginator', () => {
+    expect(() => paginateDropboxListFolder([1], { pageSize: 0 })).toThrow(/positive integer/)
+    expect(() => paginateCopilotListFiles([1], { pageSize: 0 })).toThrow(/positive integer/)
+  })
 })
