@@ -1,11 +1,18 @@
 import postgres from 'postgres'
-import { afterAll, beforeEach, inject } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, inject } from 'vitest'
+import { server } from '../msw/server'
 import { applyPlaceholderServerEnv } from '../support/placeholder-env'
 
 // Runs in every worker BEFORE any test file imports `@/db`. Point the app's DB
 // singleton (`src/db/index.ts` reads `env.DATABASE_URL` at import) at the
 // container, and satisfy the rest of the server-env Zod schema with placeholders.
 applyPlaceholderServerEnv()
+
+// MSW fakes Dropbox + Copilot over HTTP. `error` mode flags any unmocked call;
+// per-test overrides are cleared between tests.
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
+afterEach(() => server.resetHandlers())
+afterAll(() => server.close())
 
 // SAFETY: only ever run (and TRUNCATE) against a local Testcontainers DB. If the
 // injected URL is anything but localhost, refuse to start — never touch a remote
