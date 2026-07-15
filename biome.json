@@ -67,7 +67,14 @@
   },
   "overrides": [
     {
-      "includes": ["src/**", "!**/__tests__/**", "!**/*.test.ts", "!**/*.test.tsx"],
+      "includes": [
+        "src/**",
+        "!**/__tests__/**",
+        "!**/*.test.ts",
+        "!**/*.test.tsx",
+        "!**/*.spec.ts",
+        "!**/*.spec.tsx"
+      ],
       "linter": {
         "rules": {
           "style": {
@@ -81,9 +88,11 @@
                       "**/test/**",
                       "test/**",
                       "**/*.test",
-                      "**/*.test.*"
+                      "**/*.test.*",
+                      "**/*.spec",
+                      "**/*.spec.*"
                     ],
-                    "message": "Production code must not import test files or the test harness (test/**, **/__tests__/**, *.test.*)."
+                    "message": "Production code must not import test files or the test harness (test/**, **/__tests__/**, *.test.*, *.spec.*)."
                   }
                 ]
               }
