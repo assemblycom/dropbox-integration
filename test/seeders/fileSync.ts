@@ -100,6 +100,14 @@ export function fromDropboxEntry(
   entry: DropboxFileListFolderSingleEntry,
   overrides: Partial<FileSeed> = {},
 ): Partial<FileSeed> {
+  // A deleted entry is a gone remote item handled by the deletion/delta flow, not
+  // a live file. Deriving a live row from it would seed an incoherent fixture that
+  // could mask deletion/resync bugs — model a gone item with tombstone() instead.
+  if (entry['.tag'] === 'deleted') {
+    throw new Error(
+      'fromDropboxEntry: cannot derive a live row from a deleted Dropbox entry; use tombstone() or drive the deletion flow',
+    )
+  }
   return {
     itemPath: entry.path_display,
     dbxFileId: entry.id,
