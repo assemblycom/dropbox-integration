@@ -7,7 +7,7 @@ import type { DropboxConnectionTokens } from '@/db/schema/dropboxConnections.sch
 import { dropboxConnections } from '@/db/schema/dropboxConnections.schema'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import type User from '@/lib/copilot/models/User.model'
-import { dropboxEntryFactory } from '../factories'
+import { dropboxDeletedFactory, dropboxEntryFactory } from '../factories'
 import {
   channelSeeder,
   dropboxConnectionSeeder,
@@ -150,6 +150,10 @@ describe('fileSyncSeeder', () => {
     await expect(
       fileSyncSeeder.create({ channelSyncId: channel.id, portalId: 'portal-foreign' }),
     ).rejects.toThrow(/does not own/)
+  })
+
+  it('fromDropboxEntry refuses to derive a live row from a deleted entry', () => {
+    expect(() => fromDropboxEntry(dropboxDeletedFactory.build())).toThrow(/deleted/)
   })
 })
 
