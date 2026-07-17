@@ -48,6 +48,21 @@ export const channelSeeder = Factory.define<ChannelSeed, Record<string, never>, 
           )
         }
         dbxAccountId = conn.accountId
+      } else {
+        // Both portalId and dbxAccountId supplied: if a connection already exists
+        // for this portal, the channel must use that connection's account. A
+        // different explicit account detaches the channel from the real Dropbox
+        // account, so account-filtered webhook/update reads would miss it. (No
+        // connection for the portal → insert as-is, minting nothing.)
+        const [existing] = await db
+          .select({ accountId: dropboxConnections.accountId })
+          .from(dropboxConnections)
+          .where(eq(dropboxConnections.portalId, portalId))
+        if (existing?.accountId && existing.accountId !== dbxAccountId) {
+          throw new Error(
+            `channelSeeder: dbxAccountId ${dbxAccountId} does not match the connection for portal ${portalId} (account ${existing.accountId})`,
+          )
+        }
       }
       if (!dbxAccountId) {
         // Reachable only if the neither-branch minted a connection whose
