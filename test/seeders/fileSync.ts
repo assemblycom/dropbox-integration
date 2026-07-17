@@ -28,12 +28,21 @@ export const fileSyncSeeder = Factory.define<FileSeed, Record<string, never>, Fi
         const channel = await channelSeeder.create(portalId ? { portalId } : {})
         channelSyncId = channel.id
         portalId = portalId ?? channel.portalId
-      } else if (!portalId) {
+      } else {
+        // The channel row's portalId is the source of truth for tenant ownership;
+        // the FK only proves the channel exists. Derive portalId from it, and if
+        // the caller also supplied one, reject a mismatch rather than seeding an
+        // impossible tenant/channel pairing production could never produce.
         const [ch] = await db
           .select({ portalId: channelSync.portalId })
           .from(channelSync)
           .where(eq(channelSync.id, channelSyncId))
         if (!ch) throw new Error(`fileSyncSeeder: channelSync ${channelSyncId} not found`)
+        if (portalId && portalId !== ch.portalId) {
+          throw new Error(
+            `fileSyncSeeder: portalId ${portalId} does not own channelSync ${channelSyncId} (owned by ${ch.portalId})`,
+          )
+        }
         portalId = ch.portalId
       }
       const [row] = await db

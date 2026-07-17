@@ -139,6 +139,13 @@ describe('fileSyncSeeder', () => {
       fileSyncSeeder.create({ channelSyncId: '00000000-0000-4000-8000-0000000000ff' }),
     ).rejects.toThrow(/channelSync .* not found/)
   })
+
+  it('rejects a portalId that does not own the supplied channelSyncId', async () => {
+    const channel = await channelSeeder.create()
+    await expect(
+      fileSyncSeeder.create({ channelSyncId: channel.id, portalId: 'portal-foreign' }),
+    ).rejects.toThrow(/does not own/)
+  })
 })
 
 describe('seeded scenario round-trips through the real read path', () => {
