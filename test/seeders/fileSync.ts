@@ -29,10 +29,8 @@ export const fileSyncSeeder = Factory.define<FileSeed, Record<string, never>, Fi
         channelSyncId = channel.id
         portalId = portalId ?? channel.portalId
       } else {
-        // The channel row's portalId is the source of truth for tenant ownership;
-        // the FK only proves the channel exists. Derive portalId from it, and if
-        // the caller also supplied one, reject a mismatch rather than seeding an
-        // impossible tenant/channel pairing production could never produce.
+        // The channel's portalId owns the row; derive it, and reject a caller
+        // portalId that disagrees rather than seeding an impossible pairing.
         const [ch] = await db
           .select({ portalId: channelSync.portalId })
           .from(channelSync)
@@ -100,9 +98,7 @@ export function fromDropboxEntry(
   entry: DropboxFileListFolderSingleEntry,
   overrides: Partial<FileSeed> = {},
 ): Partial<FileSeed> {
-  // A deleted entry is a gone remote item handled by the deletion/delta flow, not
-  // a live file. Deriving a live row from it would seed an incoherent fixture that
-  // could mask deletion/resync bugs — model a gone item with tombstone() instead.
+  // A deleted entry is a gone item (deletion flow's job), not a live row.
   if (entry['.tag'] === 'deleted') {
     throw new Error(
       'fromDropboxEntry: cannot derive a live row from a deleted Dropbox entry; use tombstone() or drive the deletion flow',
