@@ -1,5 +1,6 @@
 import postgres from 'postgres'
 import { afterAll, afterEach, beforeAll, beforeEach, inject } from 'vitest'
+import { resetFactories } from '../factories'
 import { server } from '../msw/server'
 import { applyPlaceholderServerEnv } from '../support/placeholder-env'
 
@@ -46,6 +47,10 @@ beforeEach(async () => {
     await sql.unsafe(`TRUNCATE ${list} RESTART IDENTITY CASCADE`)
   }
 })
+
+// Zero the shared factory sequence between tests so ids are deterministic and
+// don't leak across tests (mirrors the truncate isolation above).
+beforeEach(() => resetFactories())
 
 afterAll(async () => {
   await sql.end()
