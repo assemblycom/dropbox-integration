@@ -78,6 +78,13 @@ describe('channelSeeder', () => {
     const conn = await dropboxConnectionSeeder.create({ accountId: null })
     await expect(channelSeeder.create({ portalId: conn.portalId })).rejects.toThrow(/no accountId/)
   })
+
+  it('rejects an explicit dbxAccountId that conflicts with the portal connection', async () => {
+    const conn = await dropboxConnectionSeeder.create()
+    await expect(
+      channelSeeder.create({ portalId: conn.portalId, dbxAccountId: 'acc-other' }),
+    ).rejects.toThrow(/does not match/)
+  })
 })
 
 describe('fileSyncSeeder', () => {
