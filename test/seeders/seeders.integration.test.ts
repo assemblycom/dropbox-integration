@@ -73,6 +73,11 @@ describe('channelSeeder', () => {
   it('throws when dbxAccountId is supplied without portalId', async () => {
     await expect(channelSeeder.create({ dbxAccountId: 'acc-orphan' })).rejects.toThrow(/portalId/)
   })
+
+  it('rejects when the existing connection for the portal has no accountId', async () => {
+    const conn = await dropboxConnectionSeeder.create({ accountId: null })
+    await expect(channelSeeder.create({ portalId: conn.portalId })).rejects.toThrow(/no accountId/)
+  })
 })
 
 describe('fileSyncSeeder', () => {

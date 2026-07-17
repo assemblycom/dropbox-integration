@@ -31,17 +31,28 @@ export const channelSeeder = Factory.define<ChannelSeed, Record<string, never>, 
         portalId = conn.portalId
         dbxAccountId = conn.accountId ?? undefined
       } else if (!dbxAccountId) {
-        // portalId is globally unique, so find-or-create the connection for it.
+        // portalId is globally unique, so find-or-create the connection for it,
+        // then adopt ITS accountId — never invent one. A fabricated account
+        // would match neither the connection nor the real Dropbox account OAuth
+        // later records, so webhook/update paths filtered by dbxAccountId would
+        // miss this channel. If the existing connection has no accountId yet
+        // (pre-OAuth), fail loudly instead of seeding that drift.
         const [existing] = await db
           .select({ accountId: dropboxConnections.accountId })
           .from(dropboxConnections)
           .where(eq(dropboxConnections.portalId, portalId))
-        dbxAccountId = existing
-          ? (existing.accountId ?? `acc-${n}`)
-          : ((await dropboxConnectionSeeder.create({ portalId })).accountId ?? `acc-${n}`)
+        const conn = existing ?? (await dropboxConnectionSeeder.create({ portalId }))
+        if (!conn.accountId) {
+          throw new Error(
+            `channelSeeder: connection for portal ${portalId} has no accountId; set the connection's accountId or pass dbxAccountId explicitly`,
+          )
+        }
+        dbxAccountId = conn.accountId
       }
       if (!dbxAccountId) {
-        // Unreachable: dropboxConnectionSeeder always defaults accountId.
+        // Reachable only if the neither-branch minted a connection whose
+        // accountId was null; dropboxConnectionSeeder defaults it, so in
+        // practice this never fires.
         throw new Error('channelSeeder: could not resolve dbxAccountId')
       }
       const [row] = await db
