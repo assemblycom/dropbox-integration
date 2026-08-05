@@ -1,6 +1,9 @@
 name: Code Quality Checks
 
-on: push
+# pull_request also covers fork PRs, so lint + type-check gate them too.
+on:
+  push:
+  pull_request:
 
 permissions:
   contents: read
