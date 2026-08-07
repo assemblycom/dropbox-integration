@@ -1,8 +1,13 @@
 import postgres from 'postgres'
-import { afterAll, afterEach, beforeAll, beforeEach, inject } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, inject, vi } from 'vitest'
 import { resetFactories } from '../factories'
 import { server } from '../msw/server'
 import { applyPlaceholderServerEnv } from '../support/placeholder-env'
+
+// Run tasks inline via the double so tests drive the real graph (no Trigger server).
+// Both specifiers: tasks use `/v3`, withErrorLogger uses the base import.
+vi.mock('@trigger.dev/sdk/v3', () => import('../trigger/inlineSdk'))
+vi.mock('@trigger.dev/sdk', () => import('../trigger/inlineSdk'))
 
 // Runs in every worker BEFORE any test file imports `@/db`. Point the app's DB
 // singleton (`src/db/index.ts` reads `env.DATABASE_URL` at import) at the
