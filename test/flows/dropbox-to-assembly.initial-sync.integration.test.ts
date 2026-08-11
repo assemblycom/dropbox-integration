@@ -17,10 +17,7 @@ import { channelSeeder, dropboxConnectionSeeder } from '../seeders'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// L1.1 (PR3) — initial Dropbox -> Assembly sync. Drives the REAL
-// initiateDropboxToAssemblySync graph inline (L1.0 double) against Testcontainers
-// Postgres, Dropbox + Copilot faked via MSW. Empty mapping -> populated; assert the
-// final fileFolderSync rows + the channelSync completion stamps (status/cursor/lastSyncedAt).
+// Initial Dropbox -> Assembly sync: drive the real graph inline, empty -> populated.
 describe('initial sync: Dropbox -> Assembly', () => {
   it('creates an Assembly mapping row for a folder, a top-level file, and a nested file', async () => {
     // ---- seed the connection + channel (no fileFolderSync rows: fresh sync) ----
@@ -37,8 +34,7 @@ describe('initial sync: Dropbox -> Assembly', () => {
       dbxRootPath: '/root',
     })
 
-    // ---- remote fixtures: Dropbox list_folder entries under /root, folder-first so
-    // the folder row (with dbxFileId) exists before the nested file resolves. ----
+    // Dropbox list_folder entries under /root, folder-first so the folder row exists first.
     const folder = dropboxFolderFactory.build({
       id: 'dbx:folder-A',
       name: 'folder-A',
