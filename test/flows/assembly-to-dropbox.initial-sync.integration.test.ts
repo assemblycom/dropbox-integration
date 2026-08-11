@@ -18,10 +18,7 @@ import {
 } from '../msw'
 import { channelSeeder, dropboxConnectionSeeder } from '../seeders'
 
-// L1.1 (PR2) — initial Assembly -> Dropbox sync. Drives the REAL
-// initiateAssemblyToDropboxSync graph inline (L1.0 double) against Testcontainers
-// Postgres, Dropbox + Copilot faked via MSW. Empty mapping -> populated; assert the
-// final fileFolderSync rows + that the channel's syncedFilesCount advanced.
+// Initial Assembly -> Dropbox sync: drive the real graph inline, empty -> populated.
 describe('initial sync: Assembly -> Dropbox', () => {
   it('creates a Dropbox mapping row for a folder, a top-level file, and a nested file', async () => {
     // ---- seed the connection + channel (no fileFolderSync rows: fresh sync) ----
@@ -55,14 +52,12 @@ describe('initial sync: Assembly -> Dropbox', () => {
     )
     mockDropboxGetMetadata({}) // every path -> 409 not_found (nothing exists yet)
     mockDropboxCreateFolder() // folder create -> folder metadata
-    // Distinct dbxFileId per uploaded file, else the second markUpdated trips the
-    // (portalId, channelSyncId, dbxFileId) partial unique index.
+    // Distinct dbxFileId per file, else the second markUpdated trips the unique index.
     mockDropboxUpload((path) => dropboxFileMetadata({ path_display: path, id: `id:dbx:${path}` }))
     mockAssemblyFileDownload() // the Assembly file body (bare fetch of file.downloadUrl)
 
-    // ---- drive the real half in-process (the DB assertions below are the real
-    // verification: a thrown leaf resolves to { ok: false } here without failing
-    // this call, so an ok-check would be vacuous). ----
+    // Drive the real half; the DB assertions below are the verification (a thrown
+    // leaf resolves to { ok: false } without failing this call, so an ok-check is vacuous).
     const user = new User('test-token', { workspaceId: connection.portalId } as Token)
     await initiateAssemblyToDropboxSync.triggerAndWait({
       dbxRootPath: '/root',

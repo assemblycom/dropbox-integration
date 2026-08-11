@@ -103,8 +103,7 @@ export function mockDropboxDownload(
   })
 }
 
-// The Assembly file body source for Assembly->Dropbox: uploadFileInDropbox does a bare
-// fetch(file.downloadUrl). Matches the URL copilotDownloadableFactory stamps on files.
+// Assembly file body source (uploadFileInDropbox fetches file.downloadUrl); matches copilotDownloadableFactory.
 export function mockAssemblyFileDownload(body = 'file-bytes'): void {
   server.use(http.get('https://content.example/download', () => new HttpResponse(body)))
 }
