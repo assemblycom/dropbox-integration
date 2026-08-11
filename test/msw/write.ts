@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { HttpResponse, http } from 'msw'
 import { DBX_URL_PATH } from '@/features/sync/constant'
 import { dropboxGetMetadataNotFound } from './errors'
@@ -120,7 +121,8 @@ export function mockCopilotCreateFile(opts: { uploadUrl?: string } = {}): void {
       const { path, channelId } = (await request.json()) as { path: string; channelId: string }
       const fileType = params.fileType as string
       return HttpResponse.json({
-        id: `copilot-${path}`,
+        // Real Copilot returns a UUID; callers persist it into a uuid() column.
+        id: randomUUID(),
         channelId,
         name: nameOf(path),
         object: fileType,
