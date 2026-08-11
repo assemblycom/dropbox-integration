@@ -1,0 +1,134 @@
+import { HttpResponse, http } from 'msw'
+import { DBX_URL_PATH } from '@/features/sync/constant'
+import { dropboxGetMetadataNotFound } from './errors'
+import { COPILOT_HOST } from './hosts'
+import { mockCopilot, mockDropboxContent, mockDropboxRpc } from './overrides'
+import { server } from './server'
+
+export interface DropboxMeta {
+  '.tag': 'file' | 'folder'
+  id: string
+  name: string
+  path_display: string
+  path_lower: string
+  content_hash?: string
+  size?: number
+}
+
+const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+
+export function dropboxFileMetadata(overrides: Partial<DropboxMeta> = {}): DropboxMeta {
+  const path_display = overrides.path_display ?? '/root/file.txt'
+  return {
+    '.tag': 'file',
+    id: 'id:dbx-file',
+    name: nameOf(path_display),
+    path_display,
+    path_lower: path_display.toLowerCase(),
+    content_hash: 'hash-file',
+    size: 5,
+    ...overrides,
+  }
+}
+
+export function dropboxFolderMetadata(overrides: Partial<DropboxMeta> = {}): DropboxMeta {
+  const path_display = overrides.path_display ?? '/root/folder'
+  return {
+    '.tag': 'folder',
+    id: 'id:dbx-folder',
+    name: nameOf(path_display),
+    path_display,
+    path_lower: path_display.toLowerCase(),
+    ...overrides,
+  }
+}
+
+// get_metadata: the SDK returns the metadata as the response body (wrapped into `.result`).
+export function mockDropboxGetMetadata(byPath: Record<string, DropboxMeta>): void {
+  mockDropboxRpc('/2/files/get_metadata', async ({ request }) => {
+    const { path } = (await request.json()) as { path: string }
+    const meta = byPath[path]
+    return meta ? HttpResponse.json(meta) : dropboxGetMetadataNotFound()
+  })
+}
+
+export function mockDropboxCreateFolder(
+  resolve: (path: string) => DropboxMeta = (path) => dropboxFolderMetadata({ path_display: path }),
+): void {
+  mockDropboxRpc('/2/files/create_folder_v2', async ({ request }) => {
+    const { path } = (await request.json()) as { path: string }
+    return HttpResponse.json({ metadata: resolve(path) })
+  })
+}
+
+export function mockDropboxMove(
+  resolve: (fromPath: string, toPath: string) => DropboxMeta = (_from, to) =>
+    dropboxFileMetadata({ path_display: to }),
+): void {
+  mockDropboxRpc('/2/files/move_v2', async ({ request }) => {
+    const { from_path, to_path } = (await request.json()) as { from_path: string; to_path: string }
+    return HttpResponse.json({ metadata: resolve(from_path, to_path) })
+  })
+}
+
+// Reads the file path the client stamps into the Dropbox-API-Arg header.
+function filePathFromArg(request: Request): string {
+  const arg = request.headers.get('Dropbox-API-Arg')
+  return arg ? (JSON.parse(arg) as { path: string }).path : ''
+}
+
+// Upload: the client parses the JSON body via DropboxFileMetadataSchema + camelKeys.
+export function mockDropboxUpload(
+  resolve: (filePath: string) => DropboxMeta = (path) =>
+    dropboxFileMetadata({ path_display: path }),
+): void {
+  mockDropboxContent(DBX_URL_PATH.fileUpload, ({ request }) =>
+    HttpResponse.json(resolve(filePathFromArg(request))),
+  )
+}
+
+// Download: body + Dropbox-API-Result header carrying the size (client reads size, not Content-Length).
+export function mockDropboxDownload(
+  bodyByPath: Record<string, string>,
+  opts: { size?: number } = {},
+): void {
+  mockDropboxContent(DBX_URL_PATH.fileDownload, ({ request }) => {
+    const path = filePathFromArg(request)
+    const body = bodyByPath[path] ?? ''
+    return new HttpResponse(body, {
+      status: 200,
+      headers: { 'Dropbox-API-Result': JSON.stringify({ size: opts.size ?? body.length }) },
+    })
+  })
+}
+
+// The Assembly file body source for Assembly->Dropbox: uploadFileInDropbox does a bare
+// fetch(file.downloadUrl). Matches the URL copilotDownloadableFactory stamps on files.
+export function mockAssemblyFileDownload(body = 'file-bytes'): void {
+  server.use(http.get('https://content.example/download', () => new HttpResponse(body)))
+}
+
+const DEFAULT_UPLOAD_PATH = '/v1/files/upload-url'
+
+// createFile POST /v1/files/{fileType}; for files, hands back an uploadUrl and registers its PUT.
+export function mockCopilotCreateFile(opts: { uploadUrl?: string } = {}): void {
+  const uploadUrl = opts.uploadUrl ?? `${COPILOT_HOST}${DEFAULT_UPLOAD_PATH}`
+
+  mockCopilot(
+    '/v1/files/:fileType',
+    async ({ request, params }) => {
+      const { path, channelId } = (await request.json()) as { path: string; channelId: string }
+      const fileType = params.fileType as string
+      return HttpResponse.json({
+        id: `copilot-${path}`,
+        channelId,
+        name: nameOf(path),
+        object: fileType,
+        path,
+        ...(fileType === 'file' ? { uploadUrl } : {}),
+      })
+    },
+    'post',
+  )
+  server.use(http.put(uploadUrl, () => new HttpResponse(null, { status: 200 })))
+}
