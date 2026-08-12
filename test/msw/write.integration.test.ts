@@ -7,9 +7,11 @@ import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import {
   dropboxFileMetadata,
   mockCopilotCreateFile,
+  mockCopilotDeleteFile,
   mockDropboxCreateFolder,
   mockDropboxDownload,
   mockDropboxGetMetadata,
+  mockDropboxLatestCursor,
   mockDropboxMove,
   mockDropboxUpload,
 } from './write'
@@ -85,5 +87,18 @@ describe('Copilot create-file handler', () => {
     expect(created.uploadUrl).toBeTruthy()
     const put = await api.uploadFile(created.uploadUrl as string, '5', null)
     expect(put.status).toBe(200)
+  })
+})
+
+describe('delta handlers (webhook flow)', () => {
+  it('get_latest_cursor returns the given cursor', async () => {
+    mockDropboxLatestCursor('cursor:xyz')
+    const res = await dbxRaw().filesListFolderGetLatestCursor({ path: '/root', recursive: true })
+    expect(res.result.cursor).toBe('cursor:xyz')
+  })
+
+  it('deleteFile resolves against the Copilot DELETE handler', async () => {
+    mockCopilotDeleteFile()
+    await expect(new CopilotAPI('token').deleteFile('file-id')).resolves.toBeDefined()
   })
 })
