@@ -133,3 +133,13 @@ export function mockCopilotCreateFile(opts: { uploadUrl?: string } = {}): void {
   )
   server.use(http.put(uploadUrl, () => new HttpResponse(null, { status: 200 })))
 }
+
+// get_latest_cursor — used on first-time delta and the root-move 409 branch.
+export function mockDropboxLatestCursor(cursor = 'cursor:latest'): void {
+  mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () => HttpResponse.json({ cursor }))
+}
+
+// Copilot file delete (DELETE /v1/files/{id}) — used by the delete + content-change leaves.
+export function mockCopilotDeleteFile(): void {
+  mockCopilot('/v1/files/:id', () => HttpResponse.json({}), 'delete')
+}
