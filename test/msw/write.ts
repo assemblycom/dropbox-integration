@@ -139,6 +139,18 @@ export function mockDropboxLatestCursor(cursor = 'cursor:latest'): void {
   mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () => HttpResponse.json({ cursor }))
 }
 
+// Dropbox filesDeleteV2 (/2/files/delete_v2) — used by the Assembly-webhook delete + update
+// leaves. Captures the deleted paths so tests can verify WHICH Dropbox path was removed.
+export function mockDropboxDeleteFile(): { deletedPaths: string[] } {
+  const deletedPaths: string[] = []
+  mockDropboxRpc('/2/files/delete_v2', async ({ request }) => {
+    const { path } = (await request.json()) as { path: string }
+    deletedPaths.push(path)
+    return HttpResponse.json({ metadata: dropboxFileMetadata({ path_display: path }) })
+  })
+  return { deletedPaths }
+}
+
 // Copilot file delete (DELETE /v1/files/{id}) — used by the delete + content-change leaves.
 // Returns { deletedIds } capturing the ids sent, so tests can verify WHICH file was
 // deleted and how many times (the DB row's soft-delete alone can't see the outbound id).
