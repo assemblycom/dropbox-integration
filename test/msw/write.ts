@@ -139,8 +139,7 @@ export function mockDropboxLatestCursor(cursor = 'cursor:latest'): void {
   mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () => HttpResponse.json({ cursor }))
 }
 
-// Dropbox filesDeleteV2 (/2/files/delete_v2) — used by the Assembly-webhook delete + update
-// leaves. Captures the deleted paths so tests can verify WHICH Dropbox path was removed.
+// Dropbox delete_v2. Records the deleted paths so a test can check which path was deleted.
 export function mockDropboxDeleteFile(): { deletedPaths: string[] } {
   const deletedPaths: string[] = []
   mockDropboxRpc('/2/files/delete_v2', async ({ request }) => {
