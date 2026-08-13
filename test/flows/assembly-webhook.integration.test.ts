@@ -8,7 +8,6 @@ import User from '@/lib/copilot/models/User.model'
 import type { Token } from '@/lib/copilot/types'
 import { copilotDownloadableFactory, copilotFileFactory, copilotRenamedFactory } from '../factories'
 import {
-  dropboxFileMetadata,
   mockAssemblyFileDownload,
   mockDropboxDeleteFile,
   mockDropboxGetMetadata,
@@ -17,8 +16,6 @@ import {
 import { channelSeeder, dropboxConnectionSeeder, fileSyncSeeder, synced } from '../seeders'
 
 const ACCOUNT = 'acc-asm'
-const uniqueDbxUpload = (path: string) =>
-  dropboxFileMetadata({ path_display: path, id: `id:dbx:${path}` })
 
 async function seed() {
   const connection = await dropboxConnectionSeeder.create({
@@ -48,7 +45,7 @@ describe('Assembly webhook: applying a change to Dropbox', () => {
       path: 'created.txt', // Copilot paths have no leading slash
     })
     mockDropboxGetMetadata({}) // 404 → doesn't exist yet
-    mockDropboxUpload(uniqueDbxUpload)
+    mockDropboxUpload()
     mockAssemblyFileDownload()
 
     await svc.handleFileCreated({ eventType: 'file.created', data })
@@ -111,7 +108,7 @@ describe('Assembly webhook: applying a change to Dropbox', () => {
     })
     const { deletedPaths } = mockDropboxDeleteFile()
     mockDropboxGetMetadata({})
-    mockDropboxUpload(uniqueDbxUpload)
+    mockDropboxUpload()
     mockAssemblyFileDownload()
 
     await svc.handleFileUpdated({ eventType: 'file.updated', data })

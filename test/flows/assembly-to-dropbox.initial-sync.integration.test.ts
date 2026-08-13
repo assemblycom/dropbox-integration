@@ -9,7 +9,6 @@ import type { Token } from '@/lib/copilot/types'
 import { initiateAssemblyToDropboxSync } from '@/trigger/processFileSync'
 import { copilotDownloadableFactory, copilotFolderFactory, copilotListPage } from '../factories'
 import {
-  dropboxFileMetadata,
   mockAssemblyFileDownload,
   mockCopilot,
   mockDropboxCreateFolder,
@@ -52,8 +51,7 @@ describe('initial sync: Assembly -> Dropbox', () => {
     )
     mockDropboxGetMetadata({}) // every path -> 409 not_found (nothing exists yet)
     mockDropboxCreateFolder() // folder create -> folder metadata
-    // Distinct dbxFileId per file, else the second markUpdated trips the unique index.
-    mockDropboxUpload((path) => dropboxFileMetadata({ path_display: path, id: `id:dbx:${path}` }))
+    mockDropboxUpload() // default gives a distinct dbxFileId per path
     mockAssemblyFileDownload() // the Assembly file body (bare fetch of file.downloadUrl)
 
     // Drive the real half; the DB assertions below are the verification (a thrown
