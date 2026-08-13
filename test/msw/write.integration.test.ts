@@ -9,6 +9,7 @@ import {
   mockCopilotCreateFile,
   mockCopilotDeleteFile,
   mockDropboxCreateFolder,
+  mockDropboxDeleteFile,
   mockDropboxDownload,
   mockDropboxGetMetadata,
   mockDropboxLatestCursor,
@@ -101,5 +102,12 @@ describe('delta handlers (webhook flow)', () => {
     const { deletedIds } = mockCopilotDeleteFile()
     await expect(new CopilotAPI('token').deleteFile('file-id')).resolves.toBeDefined()
     expect(deletedIds).toEqual(['file-id'])
+  })
+
+  it('delete_v2 hits the Dropbox handler and captures the path', async () => {
+    const { deletedPaths } = mockDropboxDeleteFile()
+    const res = await dbxRaw().filesDeleteV2({ path: '/root/x.txt' })
+    expect(res.result.metadata.path_display).toBe('/root/x.txt')
+    expect(deletedPaths).toEqual(['/root/x.txt'])
   })
 })
