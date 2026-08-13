@@ -2,13 +2,15 @@ import crypto from 'node:crypto'
 import { NextRequest } from 'next/server'
 import { describe, expect, it, vi } from 'vitest'
 import { GET, POST } from '@/app/api/webhook/dropbox/route'
+import env from '@/config/server.env'
 import { mockSleepInstant } from '../time'
 
 // The controller sleeps 800ms (ping-pong guard) before HMAC; keep it instant.
 vi.mock('@/utils/sleep')
 
-const SECRET = 'test-dropbox-app-secret' // placeholder DROPBOX_APP_SECRET (test/support/placeholder-env.ts)
-const sign = (body: string) => crypto.createHmac('sha256', SECRET).update(body).digest('hex')
+// Sign with the exact secret the controller verifies against — no drift from placeholder-env.
+const sign = (body: string) =>
+  crypto.createHmac('sha256', env.DROPBOX_APP_SECRET).update(body).digest('hex')
 const postBody = JSON.stringify({ list_folder: { accounts: [] } })
 
 const postReq = (headers: Record<string, string>) =>
