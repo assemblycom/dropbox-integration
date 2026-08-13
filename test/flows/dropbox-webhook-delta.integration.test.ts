@@ -83,7 +83,7 @@ describe('webhook delta: Dropbox -> Assembly', () => {
 
   it('deleted entry → soft-deletes the mapped row', async () => {
     const channel = await seedChannel()
-    await fileSyncSeeder.create({
+    const gone = await fileSyncSeeder.create({
       ...synced(),
       channelSyncId: channel.id,
       itemPath: '/gone.txt', // root-relative, as stored rows are
@@ -93,7 +93,7 @@ describe('webhook delta: Dropbox -> Assembly', () => {
     })
     const del = dropboxDeletedFactory.build({ name: 'gone.txt', path_display: '/root/gone.txt' })
     server.use(...paginateDropboxListFolder([del]))
-    mockCopilotDeleteFile()
+    const { deletedIds } = mockCopilotDeleteFile()
 
     await new DropboxWebhook().fetchDropBoxChanges(ACCOUNT)
 
@@ -104,11 +104,13 @@ describe('webhook delta: Dropbox -> Assembly', () => {
     expect(row.deletedAt).not.toBeNull()
     expect(row.pendingAction).toBeNull()
     expect(await liveRows(channel.id)).toHaveLength(0)
+    // outbound: exactly the mapped file's Copilot id was deleted (once)
+    expect(deletedIds).toEqual([gone.assemblyFileId])
   })
 
   it('rename (delete + new, same dbxFileId) → old soft-deleted, new live', async () => {
     const channel = await seedChannel()
-    await fileSyncSeeder.create({
+    const old = await fileSyncSeeder.create({
       ...synced(),
       channelSyncId: channel.id,
       itemPath: '/old.txt',
@@ -124,7 +126,7 @@ describe('webhook delta: Dropbox -> Assembly', () => {
       content_hash: 'h',
     })
     server.use(...paginateDropboxListFolder([del, created]))
-    mockCopilotDeleteFile()
+    const { deletedIds } = mockCopilotDeleteFile()
     mockCopilotCreateFile()
     mockDropboxDownload({ '/root/new.txt': 'bytes' })
 
@@ -140,11 +142,13 @@ describe('webhook delta: Dropbox -> Assembly', () => {
     expect(oldRow?.pendingAction).toBeNull()
     expect(newRow).toMatchObject({ dbxFileId: 'dbx:X', deletedAt: null, pendingAction: null })
     expect(newRow?.assemblyFileId).toMatch(UUID_RE)
+    // outbound: the OLD Copilot file (not the new one) was the delete target
+    expect(deletedIds).toEqual([old.assemblyFileId])
   })
 
   it('content change → old soft-deleted, new row with the new hash', async () => {
     const channel = await seedChannel()
-    await fileSyncSeeder.create({
+    const doc = await fileSyncSeeder.create({
       ...synced(),
       channelSyncId: channel.id,
       itemPath: '/doc.txt',
@@ -159,7 +163,7 @@ describe('webhook delta: Dropbox -> Assembly', () => {
       content_hash: 'new-hash',
     })
     server.use(...paginateDropboxListFolder([changed]))
-    mockCopilotDeleteFile()
+    const { deletedIds } = mockCopilotDeleteFile()
     mockCopilotCreateFile()
     mockDropboxDownload({ '/root/doc.txt': 'bytes' })
 
@@ -177,6 +181,8 @@ describe('webhook delta: Dropbox -> Assembly', () => {
     expect(live).toHaveLength(1)
     expect(live[0].contentHash).toBe('new-hash')
     expect(live[0].assemblyFileId).toMatch(UUID_RE)
+    // outbound: the stale Copilot file was deleted before the new one was created
+    expect(deletedIds).toEqual([doc.assemblyFileId])
   })
 
   it('unchanged content → no delete/create, row untouched', async () => {

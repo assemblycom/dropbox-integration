@@ -140,6 +140,17 @@ export function mockDropboxLatestCursor(cursor = 'cursor:latest'): void {
 }
 
 // Copilot file delete (DELETE /v1/files/{id}) — used by the delete + content-change leaves.
-export function mockCopilotDeleteFile(): void {
-  mockCopilot('/v1/files/:id', () => HttpResponse.json({}), 'delete')
+// Returns { deletedIds } capturing the ids sent, so tests can verify WHICH file was
+// deleted and how many times (the DB row's soft-delete alone can't see the outbound id).
+export function mockCopilotDeleteFile(): { deletedIds: string[] } {
+  const deletedIds: string[] = []
+  mockCopilot(
+    '/v1/files/:id',
+    ({ params }) => {
+      deletedIds.push(params.id as string)
+      return HttpResponse.json({})
+    },
+    'delete',
+  )
+  return { deletedIds }
 }

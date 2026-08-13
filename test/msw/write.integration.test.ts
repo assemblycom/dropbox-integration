@@ -97,8 +97,9 @@ describe('delta handlers (webhook flow)', () => {
     expect(res.result.cursor).toBe('cursor:xyz')
   })
 
-  it('deleteFile resolves against the Copilot DELETE handler', async () => {
-    mockCopilotDeleteFile()
+  it('deleteFile hits the Copilot DELETE handler and captures the id', async () => {
+    const { deletedIds } = mockCopilotDeleteFile()
     await expect(new CopilotAPI('token').deleteFile('file-id')).resolves.toBeDefined()
+    expect(deletedIds).toEqual(['file-id'])
   })
 })
