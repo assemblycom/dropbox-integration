@@ -8,12 +8,7 @@ import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import User from '@/lib/copilot/models/User.model'
 import type { Token } from '@/lib/copilot/types'
 import { copilotDownloadableFactory, copilotFileFactory } from '../factories'
-import {
-  dropboxFileMetadata,
-  mockAssemblyFileDownload,
-  mockDropboxGetMetadata,
-  mockDropboxUpload,
-} from '../msw'
+import { mockAssemblyFileDownload, mockDropboxGetMetadata, mockDropboxUpload } from '../msw'
 import {
   channelSeeder,
   dropboxConnectionSeeder,
@@ -26,9 +21,6 @@ import { mockSleepInstant } from '../time'
 
 // Controller sleeps 800ms (always) + 5000ms (only on the create path); keep instant.
 vi.mock('@/utils/sleep')
-
-const uniqueDbxUpload = (path: string) =>
-  dropboxFileMetadata({ path_display: path, id: `id:dbx:${path}` })
 
 // Fake Copilot auth (SDK-internal token decode, not MSW-interceptable) so the controller
 // resolves the seeded workspace.
@@ -95,7 +87,7 @@ describe('Assembly webhook: deciding whether to sync to Dropbox', () => {
     const { channel } = await seedActive()
     const sleepSpy = mockSleepInstant()
     mockDropboxGetMetadata({})
-    mockDropboxUpload(uniqueDbxUpload)
+    mockDropboxUpload()
     mockAssemblyFileDownload()
     const data = copilotDownloadableFactory.build({
       channelId: channel.assemblyChannelId,
@@ -122,7 +114,7 @@ describe('Assembly webhook: deciding whether to sync to Dropbox', () => {
     })
     const sleepSpy = mockSleepInstant()
     mockDropboxGetMetadata({})
-    mockDropboxUpload(uniqueDbxUpload)
+    mockDropboxUpload()
     mockAssemblyFileDownload()
     const data = copilotDownloadableFactory.build({
       channelId: channel.assemblyChannelId,
