@@ -4,10 +4,12 @@ import { ObjectType } from '@/db/constants'
 import { DBX_URL_PATH } from '@/features/sync/constant'
 import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
+import { copilotFileFactory } from '../factories'
 import {
   dropboxFileMetadata,
   mockCopilotCreateFile,
   mockCopilotDeleteFile,
+  mockCopilotRetrieveFile,
   mockDropboxCreateFolder,
   mockDropboxDeleteFile,
   mockDropboxDownload,
@@ -96,6 +98,14 @@ describe('delta handlers (webhook flow)', () => {
     mockDropboxLatestCursor('cursor:xyz')
     const res = await dbxRaw().filesListFolderGetLatestCursor({ path: '/root', recursive: true })
     expect(res.result.cursor).toBe('cursor:xyz')
+  })
+
+  it('retrieveFile returns the file for a known id and 404s an unknown one', async () => {
+    const file = copilotFileFactory.build()
+    mockCopilotRetrieveFile({ [file.id]: file })
+    const api = new CopilotAPI('token')
+    expect((await api.retrieveFile(file.id)).id).toBe(file.id)
+    await expect(api.retrieveFile('missing-id')).rejects.toMatchObject({ status: 404 })
   })
 
   it('deleteFile hits the Copilot DELETE handler and captures the id', async () => {

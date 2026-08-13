@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { HttpResponse, http } from 'msw'
 import { DBX_URL_PATH } from '@/features/sync/constant'
-import { dropboxGetMetadataNotFound } from './errors'
+import type { CopilotFileRetrieve } from '@/lib/copilot/types'
+import { copilotNotFound, dropboxGetMetadataNotFound } from './errors'
 import { COPILOT_HOST } from './hosts'
 import { mockCopilot, mockDropboxContent, mockDropboxRpc } from './overrides'
 import { server } from './server'
@@ -79,9 +80,11 @@ function filePathFromArg(request: Request): string {
 }
 
 // Upload: the client parses the JSON body via DropboxFileMetadataSchema + camelKeys.
+// Default gives a distinct dbxFileId per path so multiple uploads in one test don't
+// collide on the (portalId, channelSyncId, dbxFileId) partial unique index.
 export function mockDropboxUpload(
   resolve: (filePath: string) => DropboxMeta = (path) =>
-    dropboxFileMetadata({ path_display: path }),
+    dropboxFileMetadata({ path_display: path, id: `id:dbx:${path}` }),
 ): void {
   mockDropboxContent(DBX_URL_PATH.fileUpload, ({ request }) =>
     HttpResponse.json(resolve(filePathFromArg(request))),
@@ -140,6 +143,7 @@ export function mockDropboxLatestCursor(cursor = 'cursor:latest'): void {
 }
 
 // Dropbox delete_v2. Records the deleted paths so a test can check which path was deleted.
+// Per the Dropbox API spec, delete_v2 returns the item's file/folder metadata (not a "deleted" tag).
 export function mockDropboxDeleteFile(): { deletedPaths: string[] } {
   const deletedPaths: string[] = []
   mockDropboxRpc('/2/files/delete_v2', async ({ request }) => {
@@ -148,6 +152,18 @@ export function mockDropboxDeleteFile(): { deletedPaths: string[] } {
     return HttpResponse.json({ metadata: dropboxFileMetadata({ path_display: path }) })
   })
   return { deletedPaths }
+}
+
+// Copilot retrieveFile (GET /v1/files/{id}). Returns the mapped file, or 404 for an unknown id.
+export function mockCopilotRetrieveFile(byId: Record<string, CopilotFileRetrieve>): void {
+  mockCopilot(
+    '/v1/files/:id',
+    ({ params }) => {
+      const file = byId[params.id as string]
+      return file ? HttpResponse.json(file) : copilotNotFound()
+    },
+    'get',
+  )
 }
 
 // Copilot file delete (DELETE /v1/files/{id}) — used by the delete + content-change leaves.
