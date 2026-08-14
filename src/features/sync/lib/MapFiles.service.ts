@@ -496,20 +496,26 @@ export class MapFilesService extends AuthenticatedDropboxService {
 
     await db.transaction(async (tx) => {
       const deletedAt = new Date()
+      // Scope to this portal so a foreign id can never delete another workspace's channel.
       await tx
         .update(channelSync)
         .set({
           deletedAt,
           status: false,
         })
-        .where(inArray(channelSync.id, ids))
+        .where(and(inArray(channelSync.id, ids), eq(channelSync.portalId, this.user.portalId)))
 
       await tx
         .update(fileFolderSync)
         .set({
           deletedAt,
         })
-        .where(inArray(fileFolderSync.channelSyncId, ids))
+        .where(
+          and(
+            inArray(fileFolderSync.channelSyncId, ids),
+            eq(fileFolderSync.portalId, this.user.portalId),
+          ),
+        )
     })
 
     logger.info('MapFilesService#deleteChannelMapsByIds :: Deleted channel maps', ids)
