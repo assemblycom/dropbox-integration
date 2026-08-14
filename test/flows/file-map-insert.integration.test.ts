@@ -179,19 +179,21 @@ describe('MapFilesService#insertCreatePending', () => {
     expect((await rowById(existing.id)).dbxFileId).toBe('dbx:new')
   })
 
-  it('updates dbxFileId on conflict when it changes from one non-null id to another', async () => {
+  it('updates dbxFileId on a case-variant conflict, from one non-null id to another', async () => {
     const { channel, service } = await seed()
     // The production case: the row already had a Dropbox id and the file was
     // re-uploaded under a new one ('dbx:old' IS DISTINCT FROM 'dbx:new').
+    // The paths differ only in case, so this also guards the update's
+    // lower(itemPath) = lower(payload) lookup against a case-sensitive regression.
     const existing = await fileSyncSeeder.create({
       channelSyncId: channel.id,
-      itemPath: '/root/y.txt',
+      itemPath: '/root/Case.txt',
       dbxFileId: 'dbx:old',
     })
 
     const row = await service.insertCreatePending({
       channelSyncId: channel.id,
-      itemPath: '/root/y.txt',
+      itemPath: '/root/case.txt',
       object: ObjectType.FILE,
       target: PendingActionTarget.ASSEMBLY,
       assemblyFileId: null,
