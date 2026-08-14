@@ -59,4 +59,22 @@ describe('MapFilesService#deleteChannelMapsByIds portal guard', () => {
     expect(after.status).toBe(false)
     expect((await rowById(row.id)).deletedAt).not.toBeNull()
   })
+
+  it('deletes only the caller portal ids in a mixed batch', async () => {
+    const own = await channelSeeder.create({ dbxRootPath: '/root' })
+    const ownRow = await fileSyncSeeder.create({ channelSyncId: own.id, itemPath: '/root/a.txt' })
+    const foreign = await channelSeeder.create({ dbxRootPath: '/foreign' })
+    const foreignRow = await fileSyncSeeder.create({
+      channelSyncId: foreign.id,
+      itemPath: '/foreign/a.txt',
+    })
+    const service = makeService(own.portalId)
+
+    await service.deleteChannelMapsByIds([own.id, foreign.id])
+
+    expect((await channelById(own.id)).deletedAt).not.toBeNull()
+    expect((await rowById(ownRow.id)).deletedAt).not.toBeNull()
+    expect((await channelById(foreign.id)).deletedAt).toBeNull() // foreign untouched
+    expect((await rowById(foreignRow.id)).deletedAt).toBeNull()
+  })
 })
