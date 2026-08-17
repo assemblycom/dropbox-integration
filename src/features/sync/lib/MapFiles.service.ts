@@ -36,6 +36,7 @@ import {
 } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
 import logger from '@/lib/logger'
+import { syncedPercentage } from '@/utils/sync-progress'
 
 const MAX_ERROR_MESSAGE_LENGTH = 500
 
@@ -746,12 +747,6 @@ export class MapFilesService extends AuthenticatedDropboxService {
       ]
     }
 
-    const syncedPercentage = this.getSyncedPercentage(
-      channelMap.status,
-      channelMap.syncedFilesCount,
-      channelMap.totalFilesCount,
-    )
-
     return {
       id: channelMap.id,
       fileChannelValue,
@@ -760,24 +755,11 @@ export class MapFilesService extends AuthenticatedDropboxService {
       fileChannelId: fileChannel.id,
       lastSyncedAt: channelMap.lastSyncedAt,
       resyncingAt: channelMap.resyncingAt,
-      syncedPercentage,
-    }
-  }
-
-  private getSyncedPercentage(
-    status: boolean | null,
-    syncedFilesCount: number,
-    totalFilesCount: number,
-  ) {
-    switch (status) {
-      case true:
-        return 100
-      case false:
-        return 0
-      default: {
-        const calculatedPercentage = Math.floor((syncedFilesCount / totalFilesCount) * 100)
-        return calculatedPercentage > 100 ? 100 : calculatedPercentage
-      }
+      syncedPercentage: syncedPercentage(
+        channelMap.status,
+        channelMap.syncedFilesCount,
+        channelMap.totalFilesCount,
+      ),
     }
   }
 }
