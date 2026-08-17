@@ -230,4 +230,44 @@ describe('Assembly webhook: deciding whether to sync to Dropbox', () => {
 
     expect(res.status).toBe(404)
   })
+
+  it('waits 800ms before processing to avoid a webhook ping-pong', async () => {
+    const { channel } = await seedActive()
+    const sleepSpy = mockSleepInstant()
+    const data = copilotFileFactory.build({ channelId: channel.assemblyChannelId, path: 'x.txt' })
+
+    // A non-handleable event returns early, but the 800ms guard runs first for every request.
+    await post('link.created', data)
+
+    expect(sleepSpy).toHaveBeenCalledWith(800)
+    expect(sleepSpy).not.toHaveBeenCalledWith(5000)
+  })
+
+  it('skips a create for a file that was already soft-deleted (lookup ignores deletedAt)', async () => {
+    const { channel } = await seedActive()
+    mockSleepInstant()
+    // A tombstoned row still matches the assemblyFileId lookup, so the create is treated
+    // as existing and skipped — this is what prevents resyncing a soft-deleted file.
+    const row = await fileSyncSeeder.create({
+      ...synced(),
+      ...tombstone(),
+      channelSyncId: channel.id,
+      itemPath: '/back.txt',
+      dbxFileId: 'dbx:back',
+      object: ObjectType.FILE,
+    })
+    const data = copilotFileFactory.build({
+      id: row.assemblyFileId as string,
+      channelId: channel.assemblyChannelId,
+      path: 'back.txt',
+    })
+
+    // No Dropbox mocks: a stray create would trip onUnhandledRequest:'error'.
+    const res = await post('file.created', data)
+
+    expect(res.status).toBe(200)
+    const rows = await rowsFor(channel.id)
+    expect(rows).toHaveLength(1) // only the tombstone; no new row created
+    expect(rows[0].id).toBe(row.id)
+  })
 })
