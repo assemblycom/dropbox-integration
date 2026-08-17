@@ -1,6 +1,5 @@
 import { logger, schedules, task } from '@trigger.dev/sdk/v3'
 import { and, eq, isNotNull } from 'drizzle-orm'
-import z from 'zod'
 import env from '@/config/server.env'
 import db from '@/db'
 import { channelSync } from '@/db/schema/channelSync.schema'
@@ -23,6 +22,7 @@ import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import type User from '@/lib/copilot/models/User.model'
 import { DropboxAuthClient } from '@/lib/dropbox/DropboxAuthClient'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
+import { classifyDbxChanges } from '@/utils/classify-dbx-changes'
 import { withErrorLogging } from '@/utils/withErrorLogger'
 
 export type SyncTaskPayload = {
@@ -212,92 +212,22 @@ export const handleChannelFileChanges = task({
         isNotNull(fileFolderSync.dbxFileId),
       ) as WhereClause,
     )
-    const mappedIds = mappedFiles.map((item) => z.string().parse(item.dbxFileId))
-    const deletedIds: string[] = []
+    const { deleted, created, contentUpdated } = classifyDbxChanges(files, mappedFiles)
 
-    // TODO: need to refactor this function
-
-    /**
-     * Deleted files are handled in batch, so filtering out deleted files
-     */
-    const deletedFiles = files
-      .map((entry) => {
-        if (entry['.tag'] === 'deleted' && mappedIds.includes(entry.id)) {
-          deletedIds.push(entry.id)
-          return {
-            payload: {
-              opts: {
-                dbxRootPath,
-                assemblyChannelId,
-                channelSyncId,
-                user,
-                connectionToken,
-              },
-              entry,
-            },
-          }
-        }
-        return null
-      })
-      .filter((item) => !!item)
-
-    const remainingIds = mappedIds.filter((id) => !deletedIds.includes(id))
-    const newFileIds: string[] = []
-
-    /**
-     * Files which are new are also processed in batch, so filtering out new files
-     */
-    const newFiles = files
-      .map((entry) => {
-        if (entry['.tag'] !== 'deleted' && !remainingIds.includes(entry.id)) {
-          newFileIds.push(entry.id)
-          return {
-            payload: {
-              opts: {
-                dbxRootPath,
-                assemblyChannelId,
-                channelSyncId,
-                user,
-                connectionToken,
-              },
-              entry,
-            },
-          }
-        }
-        return null
-      })
-      .filter((item) => !!item)
+    const opts = { dbxRootPath, assemblyChannelId, channelSyncId, user, connectionToken }
+    const toPayload = (entry: (typeof files)[number]) => ({ payload: { opts, entry } })
 
     /**
      * Before partial unqiue index: First create and then delete the files.
      * After partial unique index: First delete and then create the files. This ensures that constraints are not violated.
      * This section should handle file rename, folder rename cases
      */
-    if (deletedFiles.length) await deleteDropboxFileInAssembly.batchTriggerAndWait(deletedFiles)
-    if (newFiles.length) await syncDropboxFileToAssembly.batchTriggerAndWait(newFiles)
+    if (deleted.length)
+      await deleteDropboxFileInAssembly.batchTriggerAndWait(deleted.map(toPayload))
+    if (created.length) await syncDropboxFileToAssembly.batchTriggerAndWait(created.map(toPayload))
 
-    // Filtering out remaining files that are not new files and are not deleted. Only content updated files are handled below this.
-    const remainingFiles = files.filter(
-      (singleFile) => singleFile['.tag'] !== 'deleted' && !newFileIds.includes(singleFile.id),
-    )
-
-    if (remainingFiles.length) {
-      for (const file of remainingFiles) {
-        const existingFile = mappedFiles.find((item) => item.dbxFileId === file.id)
-
-        if (existingFile?.contentHash && existingFile.contentHash !== file.content_hash) {
-          await updateDropboxFileInAssembly.triggerAndWait({
-            opts: {
-              dbxRootPath,
-              assemblyChannelId,
-              channelSyncId,
-              user,
-              connectionToken,
-            },
-            entry: file,
-          })
-        }
-      }
+    for (const entry of contentUpdated) {
+      await updateDropboxFileInAssembly.triggerAndWait({ opts, entry })
     }
   },
 })
@@ -492,6 +422,7 @@ export const resyncFailedFilesAndMasterSync = task({
 export const retryFailedSyncsSchedule = schedules.task({
   id: 'retry-failed-syncs-schedule',
   machine,
+  // cron: '*/2 * * * *',
   cron: '0 8,20 * * *',
   queue: {
     name: 'retry-failed-syncs-schedule',
