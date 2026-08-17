@@ -111,7 +111,7 @@ export class ResyncService {
     await db
       .update(channelSync)
       .set({ resyncingAt: new Date() })
-      .where(eq(channelSync.id, channelSyncId))
+      .where(and(eq(channelSync.id, channelSyncId), eq(channelSync.portalId, portalId)))
 
     try {
       await resyncFailedFilesAndMasterSync.trigger(
@@ -138,7 +138,7 @@ export class ResyncService {
       await db
         .update(channelSync)
         .set({ resyncingAt: null })
-        .where(eq(channelSync.id, channelSyncId))
+        .where(and(eq(channelSync.id, channelSyncId), eq(channelSync.portalId, portalId)))
       throw error
     }
 
