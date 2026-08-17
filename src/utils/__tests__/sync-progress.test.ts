@@ -1,28 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { pendingTotalCount, syncedPercentage } from '@/utils/sync-progress'
+import { getSyncedPercentage, pendingTotalCount } from '@/utils/sync-progress'
 
-describe('syncedPercentage', () => {
+describe('getSyncedPercentage', () => {
   it('returns 100 when status is true, regardless of counts', () => {
-    expect(syncedPercentage(true, 0, 0)).toBe(100)
-    expect(syncedPercentage(true, 3, 7)).toBe(100)
+    expect(getSyncedPercentage(true, 0, 0)).toBe(100)
+    expect(getSyncedPercentage(true, 3, 7)).toBe(100)
   })
 
   it('returns 0 when status is false, regardless of counts', () => {
-    expect(syncedPercentage(false, 7, 7)).toBe(0)
-    expect(syncedPercentage(false, 3, 7)).toBe(0)
+    expect(getSyncedPercentage(false, 7, 7)).toBe(0)
+    expect(getSyncedPercentage(false, 3, 7)).toBe(0)
   })
 
   it('floors the synced/total ratio when status is null', () => {
-    expect(syncedPercentage(null, 3, 7)).toBe(42)
+    expect(getSyncedPercentage(null, 3, 7)).toBe(42)
   })
 
   it('caps the percentage at 100 when synced exceeds total', () => {
-    expect(syncedPercentage(null, 9, 8)).toBe(100)
+    expect(getSyncedPercentage(null, 9, 8)).toBe(100)
   })
 
   it('returns 0 when total is 0 (guards the divide-by-zero that yields NaN)', () => {
-    expect(syncedPercentage(null, 0, 0)).toBe(0)
-    expect(syncedPercentage(null, 5, 0)).toBe(0)
+    expect(getSyncedPercentage(null, 0, 0)).toBe(0)
+    expect(getSyncedPercentage(null, 5, 0)).toBe(0)
   })
 })
 

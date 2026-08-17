@@ -3,7 +3,7 @@
  */
 
 /** Percentage of files synced for a channel map. `status` short-circuits the count math. */
-export const syncedPercentage = (
+export const getSyncedPercentage = (
   status: boolean | null,
   syncedFilesCount: number,
   totalFilesCount: number,

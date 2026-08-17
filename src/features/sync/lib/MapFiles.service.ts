@@ -36,7 +36,7 @@ import {
 } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
 import logger from '@/lib/logger'
-import { syncedPercentage } from '@/utils/sync-progress'
+import { getSyncedPercentage } from '@/utils/sync-progress'
 
 const MAX_ERROR_MESSAGE_LENGTH = 500
 
@@ -755,7 +755,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
       fileChannelId: fileChannel.id,
       lastSyncedAt: channelMap.lastSyncedAt,
       resyncingAt: channelMap.resyncingAt,
-      syncedPercentage: syncedPercentage(
+      syncedPercentage: getSyncedPercentage(
         channelMap.status,
         channelMap.syncedFilesCount,
         channelMap.totalFilesCount,
