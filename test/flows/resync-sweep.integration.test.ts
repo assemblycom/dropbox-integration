@@ -366,4 +366,44 @@ describe('resync sweep', () => {
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
     expect(ch.resyncingAt).toBeNull() // orchestrator's finally cleared the in-progress flag
   })
+
+  it('does nothing when the portal has no Dropbox connection', async () => {
+    const { channel } = await seed()
+    const row = await fileSyncSeeder.create({
+      ...pendingDelete(PendingActionTarget.DROPBOX),
+      channelSyncId: channel.id,
+      itemPath: '/orphan.txt',
+      dbxFileId: 'dbx:orphan',
+      object: ObjectType.FILE,
+      pendingActionLastAttemptAt: minutesAgo(6),
+    })
+
+    // A portal id with no connection → early return before any row is processed.
+    await retryFailedSyncsForPortal(randomUUID(), [row])
+
+    const after = await rowById(row.id)
+    expect(after.deletedAt).toBeNull()
+    expect(after.pendingAction).toBe('delete') // untouched
+    expect(after.pendingActionLastError).toBeNull()
+  })
+
+  it('marks a row failed when its action/target combo is unrecognised', async () => {
+    const { connection, channel } = await seed()
+    const row = await fileSyncSeeder.create({
+      ...pendingDelete(PendingActionTarget.ASSEMBLY),
+      channelSyncId: channel.id,
+      itemPath: '/weird.txt',
+      dbxFileId: 'dbx:weird',
+      object: ObjectType.FILE,
+      pendingActionLastAttemptAt: minutesAgo(6),
+    })
+    // Hand the dispatcher a row whose target is out of range; the DB row keeps a valid combo.
+    const mangled = { ...row, pendingActionTarget: 'BOGUS' } as unknown as typeof row
+
+    await retryFailedSyncsForPortal(connection.portalId, [mangled])
+
+    const after = await rowById(row.id)
+    expect(after.pendingActionLastError).toContain('unrecognised')
+    expect(after.deletedAt).toBeNull() // never dispatched to a real handler
+  })
 })
