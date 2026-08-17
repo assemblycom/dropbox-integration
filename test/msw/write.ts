@@ -8,7 +8,9 @@ import { mockCopilot, mockDropboxContent, mockDropboxRpc } from './overrides'
 import { server } from './server'
 
 export interface DropboxMeta {
-  '.tag': 'file' | 'folder'
+  // 'deleted' lets a fixture stand in for a DeletedMetadataReference (get_metadata's
+  // unexpected-tag branch); file/folder-only fields stay optional for that case.
+  '.tag': 'file' | 'folder' | 'deleted'
   id: string
   name: string
   path_display: string
@@ -142,13 +144,18 @@ export function mockDropboxLatestCursor(cursor = 'cursor:latest'): void {
   mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () => HttpResponse.json({ cursor }))
 }
 
-// Dropbox delete_v2. Records the deleted paths so a test can check which path was deleted.
+// Dropbox delete_v2. Records the attempted delete paths (recorded even when `error` is set)
+// so a test can check which path was targeted.
 // Per the Dropbox API spec, delete_v2 returns the item's file/folder metadata (not a "deleted" tag).
-export function mockDropboxDeleteFile(): { deletedPaths: string[] } {
+// Pass `error` to make every call fail (e.g. dropboxPathLookupNotFound for the quiet-delete swallow path).
+export function mockDropboxDeleteFile(opts: { error?: () => Response } = {}): {
+  deletedPaths: string[]
+} {
   const deletedPaths: string[] = []
   mockDropboxRpc('/2/files/delete_v2', async ({ request }) => {
     const { path } = (await request.json()) as { path: string }
     deletedPaths.push(path)
+    if (opts.error) return opts.error()
     return HttpResponse.json({ metadata: dropboxFileMetadata({ path_display: path }) })
   })
   return { deletedPaths }
@@ -167,14 +174,18 @@ export function mockCopilotRetrieveFile(byId: Record<string, CopilotFileRetrieve
 }
 
 // Copilot file delete (DELETE /v1/files/{id}) — used by the delete + content-change leaves.
-// Returns { deletedIds } capturing the ids sent, so tests can verify WHICH file was
-// deleted and how many times (the DB row's soft-delete alone can't see the outbound id).
-export function mockCopilotDeleteFile(): { deletedIds: string[] } {
+// Returns { deletedIds } capturing the ids sent (recorded even when `error` is set), so tests
+// can verify WHICH file was targeted and how many times (the DB row alone can't see the outbound id).
+// Pass `error` to make every call fail (e.g. copilotNotFound for the quiet-delete swallow path).
+export function mockCopilotDeleteFile(opts: { error?: () => Response } = {}): {
+  deletedIds: string[]
+} {
   const deletedIds: string[] = []
   mockCopilot(
     '/v1/files/:id',
     ({ params }) => {
       deletedIds.push(params.id as string)
+      if (opts.error) return opts.error()
       return HttpResponse.json({})
     },
     'delete',
