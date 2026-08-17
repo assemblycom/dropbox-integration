@@ -167,7 +167,10 @@ export class MapFilesService extends AuthenticatedDropboxService {
 
   async deleteFileMap(id: string): Promise<void> {
     logger.info('MapFilesService#deleteFileMap :: Deleting file map for', id)
-    await db.delete(fileFolderSync).where(eq(fileFolderSync.id, id))
+    // Scope to this portal so a foreign id can never delete another workspace's row.
+    await db
+      .delete(fileFolderSync)
+      .where(and(eq(fileFolderSync.id, id), eq(fileFolderSync.portalId, this.user.portalId)))
   }
 
   async updateFileMap(
@@ -468,7 +471,8 @@ export class MapFilesService extends AuthenticatedDropboxService {
     const [connection] = await db
       .update(channelSync)
       .set(payload)
-      .where(eq(channelSync.id, id))
+      // Scope to this portal so a foreign id can never update another workspace's channel.
+      .where(and(eq(channelSync.id, id), eq(channelSync.portalId, this.user.portalId)))
       .returning()
     logger.info('MapFilesService#updateChannelMapById :: Updated channel map', connection)
 
@@ -486,7 +490,8 @@ export class MapFilesService extends AuthenticatedDropboxService {
       .set({
         syncedFilesCount: sql`${channelSync.syncedFilesCount} + 1`,
       })
-      .where(eq(channelSync.id, id))
+      // Scope to this portal so a foreign id can never touch another workspace's channel.
+      .where(and(eq(channelSync.id, id), eq(channelSync.portalId, this.user.portalId)))
   }
 
   async deleteChannelMapsByIds(ids: string[]) {
