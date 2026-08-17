@@ -42,6 +42,7 @@ import {
   getPathFromRoot,
 } from '@/utils/filePath'
 import { normalizeError } from '@/utils/normalizeError'
+import { pendingTotalCount } from '@/utils/sync-progress'
 
 type LeafCreateParams = {
   assemblyChannelId: string
@@ -101,9 +102,9 @@ export class SyncService extends AuthenticatedDropboxService {
     const dbxFilesList = this.dbxClient.getAllFilesFolders(dbxRootPath, true, false, limit)
     const assemblyFilesList = this.user.copilot.listFiles(assemblyChannelId)
     const [dbxFiles, assemblyFiles] = await Promise.all([dbxFilesList, assemblyFilesList])
-    const filteredAssemblyFiles = assemblyFiles.data.filter((file) => file.status !== 'pending')
 
-    return dbxFiles.length + filteredAssemblyFiles.length - 1 // Note: subtract 1 to exclude the dbx root folder
+    // Note: subtract 1 to exclude the dbx root folder
+    return pendingTotalCount(dbxFiles.length, assemblyFiles.data) - 1
   }
 
   async storeTotalFilesCount(assemblyChannelId: string, dbxRootPath: string) {
