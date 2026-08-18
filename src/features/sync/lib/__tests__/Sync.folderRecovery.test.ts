@@ -130,3 +130,111 @@ describe('createFolderInAssembly :: recovers an unmapped existing folder', () =>
     expect(updateFileMap).toHaveBeenCalledWith({ dbxFileId: 'dbx:folder' }, expect.anything())
   })
 })
+
+const folderParams = {
+  assemblyChannelId: 'ch-1',
+  itemPath: '/John_s Cafe',
+  assemblyCreatePath: '/John_s Cafe',
+  lastItem: true,
+  tempFileType: 'folder',
+  channelSyncId: 'cs-1',
+  entry,
+  basePath: '/John_s Cafe',
+}
+
+describe('createFolderInAssembly :: catch-branch discriminations (case 84)', () => {
+  it('stamps the existing row (no recovery) when the re-lookup finds a row', async () => {
+    // Pre-check misses, create hits "Folder already exists", re-lookup now finds the row.
+    vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath')
+      .mockResolvedValueOnce(undefined as never)
+      .mockResolvedValueOnce({ id: 'row-x' } as never)
+    createFileMock.mockRejectedValue(folderExistsError)
+    const updateFileMap = vi
+      .spyOn(service.mapFilesService, 'updateFileMap')
+      .mockResolvedValue({} as never)
+
+    await (service as unknown as FolderSvc).createFolderInAssembly(folderParams)
+
+    expect(updateFileMap).toHaveBeenCalledWith({ dbxFileId: 'dbx:folder' }, expect.anything())
+    expect(listFilesMock).not.toHaveBeenCalled() // no recovery paging
+  })
+
+  it('rethrows an error that is not "Folder already exists"', async () => {
+    vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue(
+      undefined as never,
+    )
+    createFileMock.mockRejectedValue(new Error('network down'))
+
+    await expect(
+      (service as unknown as FolderSvc).createFolderInAssembly(folderParams),
+    ).rejects.toThrow('network down')
+  })
+})
+
+describe('recoverUnmappedAssemblyFolder :: paging + give-up (case 85)', () => {
+  beforeEach(() => {
+    vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue(
+      undefined as never,
+    )
+    createFileMock.mockRejectedValue(folderExistsError)
+  })
+
+  it('finds the folder on a later listFiles page (nextToken pagination)', async () => {
+    listFilesMock
+      .mockResolvedValueOnce({
+        data: [{ id: 'asm:other', object: 'folder', path: 'Other' }],
+        nextToken: 't1',
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: 'asm:folder', object: 'folder', path: 'John_s Cafe' }],
+        nextToken: undefined,
+      })
+    const insertFileMap = vi
+      .spyOn(service.mapFilesService, 'insertFileMap')
+      .mockResolvedValue({ id: 'row-1' } as never)
+    vi.spyOn(service.mapFilesService, 'updateChannelMapSyncedFilesCount').mockResolvedValue(
+      undefined as never,
+    )
+
+    await (service as unknown as FolderSvc).createFolderInAssembly(folderParams)
+
+    expect(listFilesMock).toHaveBeenCalledTimes(2) // paged past the first page
+    expect(listFilesMock.mock.calls[1][1]).toBe('t1') // followed the nextToken
+    expect(insertFileMap).toHaveBeenCalledWith(
+      expect.objectContaining({ assemblyFileId: 'asm:folder' }),
+    )
+  })
+
+  it('gives up silently (no insert, no throw) when the folder is never found', async () => {
+    listFilesMock.mockResolvedValueOnce({
+      data: [{ id: 'asm:other', object: 'folder', path: 'Other' }],
+      nextToken: undefined,
+    })
+    const insertFileMap = vi.spyOn(service.mapFilesService, 'insertFileMap')
+
+    await expect(
+      (service as unknown as FolderSvc).createFolderInAssembly(folderParams),
+    ).resolves.toBeUndefined()
+
+    expect(insertFileMap).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleFolderCreatedCase :: no-op guard (case 86)', () => {
+  it('does not stamp dbxFileId when the entry is not the last folder item', async () => {
+    // Folder already mapped → create is skipped and handleFolderCreatedCase is a no-op
+    // because lastItem is false.
+    vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue({
+      id: 'row-x',
+    } as never)
+    const updateFileMap = vi.spyOn(service.mapFilesService, 'updateFileMap')
+
+    await (service as unknown as FolderSvc).createFolderInAssembly({
+      ...folderParams,
+      lastItem: false,
+    })
+
+    expect(updateFileMap).not.toHaveBeenCalled()
+    expect(createFileMock).not.toHaveBeenCalled() // already mapped → no create attempt
+  })
+})

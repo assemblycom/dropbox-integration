@@ -163,4 +163,20 @@ describe('resyncLeafOnContentChange (via createLeafFileInAssembly path conflict)
     expect(removeSpy).toHaveBeenCalledTimes(1)
     expect(completeSpy).not.toHaveBeenCalled()
   })
+
+  it('recreates at the existing Assembly path so a legacy invalid name still lands', async () => {
+    insertSpy
+      .mockResolvedValueOnce(null) // path conflict
+      .mockResolvedValueOnce(row({ id: 'row-2' })) // recreate insert
+    getPathSpy.mockResolvedValueOnce(
+      row({ id: 'row-1', assemblyFileId: 'a1', contentHash: 'old', assemblyPath: '/John_s Cafe' }),
+    )
+
+    await leaf.createLeafFileInAssembly({ ...params, entry: { ...baseEntry, content_hash: 'new' } })
+
+    // The recreate carries the existing row's assemblyPath as the override.
+    expect(completeSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ pendingRowId: 'row-2', assemblyPathOverride: '/John_s Cafe' }),
+    )
+  })
 })

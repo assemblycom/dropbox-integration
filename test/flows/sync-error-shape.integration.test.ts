@@ -7,16 +7,20 @@ import { SyncService } from '@/features/sync/lib/Sync.service'
 import type { DropboxFileListFolderSingleEntry } from '@/features/sync/types'
 import User from '@/lib/copilot/models/User.model'
 import type { CopilotFileRetrieve, Token } from '@/lib/copilot/types'
-import { copilotFileFactory } from '../factories'
+import { copilotDownloadableFactory, copilotFileFactory } from '../factories'
 import {
   copilotError,
   copilotNotFound,
   type DropboxMeta,
+  dropboxFileMetadata,
   dropboxPathLookupNotFound,
   dropboxRpcError,
+  mockAssemblyFileDownload,
   mockCopilotDeleteFile,
   mockDropboxDeleteFile,
   mockDropboxGetMetadata,
+  mockDropboxMove,
+  mockDropboxUpload,
 } from '../msw'
 import { channelSeeder, dropboxConnectionSeeder, fileSyncSeeder, synced } from '../seeders'
 
@@ -89,6 +93,30 @@ describe('Dropbox create-vs-update: dead-end branches throw', () => {
         file,
       }),
     ).rejects.toThrow('returned undefined')
+  })
+
+  it('renames the existing Dropbox file then re-uploads when a file already exists at the path', async () => {
+    const svc = makeService('portal-x')
+    const file = copilotDownloadableFactory.build({ path: 'dup.txt' })
+    // A file already lives at /root/dup.txt → rename-then-reupload branch.
+    mockDropboxGetMetadata({
+      '/root/dup.txt': dropboxFileMetadata({ path_display: '/root/dup.txt' }),
+    })
+    const moves: { from: string; to: string }[] = []
+    mockDropboxMove((from, to) => {
+      moves.push({ from, to })
+      return dropboxFileMetadata({ path_display: to })
+    })
+    mockDropboxUpload()
+    mockAssemblyFileDownload()
+
+    const result = await svc.createAndUploadFileInDropbox('/root', ObjectType.FILE, file)
+
+    // Existing file renamed to a timestamped name, new content uploaded at the original path.
+    expect(moves).toHaveLength(1)
+    expect(moves[0].from).toBe('/root/dup.txt')
+    expect(moves[0].to).toMatch(/\/root\/dup \(\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}\)\.txt$/)
+    expect(result?.dbxFileId).toBe('id:dbx:/root/dup.txt')
   })
 })
 
