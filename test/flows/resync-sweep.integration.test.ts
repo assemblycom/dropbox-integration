@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
+import { HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import db from '@/db'
 import { ObjectType, PendingActionTarget } from '@/db/constants'
@@ -13,7 +14,10 @@ import { resyncFailedFilesAndMasterSync } from '@/trigger/processFileSync'
 import { copilotDownloadableFactory, copilotFileFactory } from '../factories'
 import {
   copilotError,
+  copilotNotFound,
   dropboxFileMetadata,
+  dropboxPathLookupNotFound,
+  dropboxRpcError,
   mockAssemblyFileDownload,
   mockCopilot,
   mockCopilotCreateFile,
@@ -22,6 +26,7 @@ import {
   mockDropboxDeleteFile,
   mockDropboxDownload,
   mockDropboxGetMetadata,
+  mockDropboxRpc,
   mockDropboxUpload,
 } from '../msw'
 import {
@@ -405,5 +410,424 @@ describe('resync sweep', () => {
     const after = await rowById(row.id)
     expect(after.pendingActionLastError).toContain('unrecognised')
     expect(after.deletedAt).toBeNull() // never dispatched to a real handler
+  })
+
+  // --- retryDeleteInAssembly guard + error branches (case 132) ---
+  describe('retryDeleteInAssembly branches', () => {
+    it('soft-deletes a row that has no assemblyFileId (nothing to delete in Assembly)', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create({
+        ...pendingDelete(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/no-asm.txt',
+        dbxFileId: 'dbx:no-asm',
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+      expect(after.pendingAction).toBeNull()
+    })
+
+    it('treats a Copilot 404 as already-gone and soft-deletes the row', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create({
+        ...synced(),
+        ...pendingDelete(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/gone.txt',
+        dbxFileId: 'dbx:gone',
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+      mockCopilotDeleteFile({ error: copilotNotFound })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+      expect(after.pendingAction).toBeNull()
+    })
+
+    it('marks the row failed on a non-404 Copilot error (rethrow)', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create({
+        ...synced(),
+        ...pendingDelete(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/boom.txt',
+        dbxFileId: 'dbx:boom',
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+      mockCopilotDeleteFile({
+        error: () => copilotError({ status: 400, body: { message: 'boom' } }),
+      })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).toBeNull()
+      expect(after.pendingActionLastError).not.toBeNull()
+    })
+  })
+
+  // --- retryDeleteInDropbox guard + error branches (case 133) ---
+  describe('retryDeleteInDropbox branches', () => {
+    const baseRow = (channelId: string) => ({
+      ...pendingDelete(PendingActionTarget.DROPBOX),
+      channelSyncId: channelId,
+      itemPath: '/gone.txt',
+      dbxFileId: 'dbx:gone',
+      object: ObjectType.FILE,
+      pendingActionLastAttemptAt: minutesAgo(6),
+    })
+
+    it('soft-deletes a row that has no itemPath', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+
+      await retryFailedSyncsForPortal(connection.portalId, [{ ...row, itemPath: null }])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+    })
+
+    it('soft-deletes a row whose channelSync is missing', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+
+      await retryFailedSyncsForPortal(connection.portalId, [
+        { ...row, channelSyncId: randomUUID() },
+      ])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+    })
+
+    it('treats a 409 path_lookup/not_found as already-gone and soft-deletes', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      mockDropboxDeleteFile({ error: dropboxPathLookupNotFound })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+    })
+
+    it('marks the row failed on any other Dropbox error (rethrow)', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      mockDropboxDeleteFile({
+        error: () =>
+          dropboxRpcError({
+            status: 409,
+            errorSummary: 'path/conflict/..',
+            error: { '.tag': 'path', path: { '.tag': 'conflict' } },
+          }),
+      })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).toBeNull()
+      expect(after.pendingActionLastError).not.toBeNull()
+    })
+  })
+
+  // --- retryCreateInDropbox guard + error branches (case 134) ---
+  describe('retryCreateInDropbox branches', () => {
+    const baseRow = (channelId: string) => ({
+      ...synced(),
+      ...pendingCreate(PendingActionTarget.DROPBOX),
+      channelSyncId: channelId,
+      itemPath: '/doc.txt',
+      object: ObjectType.FILE,
+      pendingActionLastAttemptAt: minutesAgo(6),
+    })
+
+    it('marks the row failed when it has no assemblyFileId', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create({
+        ...pendingCreate(PendingActionTarget.DROPBOX),
+        channelSyncId: channel.id,
+        itemPath: '/doc.txt',
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('missing assemblyFileId')
+      expect(after.deletedAt).toBeNull()
+    })
+
+    it('marks the row failed when it has no itemPath', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+
+      await retryFailedSyncsForPortal(connection.portalId, [{ ...row, itemPath: null }])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('missing itemPath')
+    })
+
+    it('marks the row failed when its channelSync is missing', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+
+      await retryFailedSyncsForPortal(connection.portalId, [
+        { ...row, channelSyncId: randomUUID() },
+      ])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('channelSync missing')
+    })
+
+    it('soft-deletes when the Assembly file is 404 on retrieve', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      mockCopilotRetrieveFile({}) // unknown id → 404
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+    })
+
+    it('marks the row failed (retry later) when the Assembly file is still pending', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      const pendingFile = copilotFileFactory.build({
+        id: row.assemblyFileId as string,
+        status: 'pending',
+      })
+      mockCopilotRetrieveFile({ [pendingFile.id]: pendingFile })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('still pending')
+      expect(after.deletedAt).toBeNull()
+    })
+  })
+
+  // --- retryCreateInAssembly + reconcile branches (cases 135, 136, 137) ---
+  describe('retryCreateInAssembly branches', () => {
+    const baseRow = (channelId: string) => ({
+      ...synced(),
+      ...pendingCreate(PendingActionTarget.ASSEMBLY),
+      channelSyncId: channelId,
+      itemPath: '/doc.txt',
+      dbxFileId: 'dbx:doc',
+      object: ObjectType.FILE,
+      pendingActionLastAttemptAt: minutesAgo(6),
+    })
+
+    // Mocks for a successful Dropbox→Assembly recreate of /root/doc.txt.
+    const mockRecreate = (dbxId = 'dbx:doc', path = '/root/doc.txt') => {
+      mockDropboxGetMetadata({ [dbxId]: dropboxFileMetadata({ path_display: path, id: dbxId }) })
+      mockCopilotCreateFile()
+      mockDropboxDownload({ [path]: 'bytes' })
+    }
+
+    it('marks the row failed when it has no dbxFileId', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create({
+        ...synced(),
+        ...pendingCreate(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/doc.txt',
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('missing dbxFileId')
+    })
+
+    it('marks the row failed when it has no itemPath', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+
+      await retryFailedSyncsForPortal(connection.portalId, [{ ...row, itemPath: null }])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('missing itemPath')
+    })
+
+    it('marks the row failed when its channelSync is missing', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+
+      await retryFailedSyncsForPortal(connection.portalId, [
+        { ...row, channelSyncId: randomUUID() },
+      ])
+
+      const after = await rowById(row.id)
+      expect(after.pendingActionLastError).toContain('channelSync missing')
+    })
+
+    it('soft-deletes when the Dropbox source is gone (metadata not_found)', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      mockDropboxGetMetadata({}) // dbxFileId path → 409 not_found → null
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+    })
+
+    it('soft-deletes when the Dropbox source is a deleted tombstone', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      mockDropboxGetMetadata({
+        'dbx:doc': {
+          '.tag': 'deleted',
+          id: 'dbx:doc',
+          name: 'doc.txt',
+          path_display: '/root/doc.txt',
+          path_lower: '/root/doc.txt',
+        },
+      })
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).not.toBeNull()
+    })
+
+    it('marks the row failed (retried, not deleted) on a non-not_found Dropbox metadata error', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create(baseRow(channel.id))
+      mockDropboxRpc('/2/files/get_metadata', () =>
+        dropboxRpcError({ status: 500, errorSummary: 'internal_error/..', error: {} }),
+      )
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).toBeNull()
+      expect(after.pendingActionLastError).not.toBeNull()
+    })
+
+    it('recreates the file when the row has no early-stamped assemblyFileId', async () => {
+      const { connection, channel } = await seed()
+      const row = await fileSyncSeeder.create({
+        ...pendingCreate(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/doc.txt',
+        dbxFileId: 'dbx:doc',
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+      mockRecreate()
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.assemblyFileId).toBeTruthy()
+      expect(after.pendingAction).toBeNull()
+      expect(after.deletedAt).toBeNull()
+    })
+
+    it('recreates the file when the early-stamped Assembly file is 404', async () => {
+      const { connection, channel } = await seed()
+      const oldId = randomUUID()
+      const row = await fileSyncSeeder.create({
+        ...pendingCreate(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/doc.txt',
+        dbxFileId: 'dbx:doc',
+        assemblyFileId: oldId,
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+      mockCopilotRetrieveFile({}) // oldId → 404 → recreate
+      mockRecreate()
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.assemblyFileId).toBeTruthy()
+      expect(after.assemblyFileId).not.toBe(oldId)
+      expect(after.pendingAction).toBeNull()
+    })
+
+    it('marks the row failed on a non-404 error while reconciling the Assembly file', async () => {
+      const { connection, channel } = await seed()
+      const oldId = randomUUID()
+      const row = await fileSyncSeeder.create({
+        ...pendingCreate(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/doc.txt',
+        dbxFileId: 'dbx:doc',
+        assemblyFileId: oldId,
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+      })
+      mockDropboxGetMetadata({
+        'dbx:doc': dropboxFileMetadata({ path_display: '/root/doc.txt', id: 'dbx:doc' }),
+      })
+      mockCopilot(
+        '/v1/files/:id',
+        () => copilotError({ status: 400, body: { message: 'boom' } }),
+        'get',
+      )
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      const after = await rowById(row.id)
+      expect(after.deletedAt).toBeNull()
+      expect(after.assemblyFileId).toBe(oldId) // untouched
+      expect(after.pendingActionLastError).not.toBeNull()
+    })
+
+    it('nulls the assemblyFileId BEFORE deleting the stale file (abandoned reconcile ordering)', async () => {
+      const { connection, channel } = await seed()
+      const oldId = randomUUID()
+      const stalePending = copilotFileFactory.build({ id: oldId, status: 'pending' })
+      const row = await fileSyncSeeder.create({
+        ...pendingCreate(PendingActionTarget.ASSEMBLY),
+        channelSyncId: channel.id,
+        itemPath: '/doc.txt',
+        dbxFileId: 'dbx:doc',
+        assemblyFileId: oldId,
+        object: ObjectType.FILE,
+        pendingActionLastAttemptAt: minutesAgo(6),
+        createdAt: hoursAgo(13), // abandoned → delete stale + recreate
+      })
+      mockDropboxGetMetadata({
+        'dbx:doc': dropboxFileMetadata({ path_display: '/root/doc.txt', id: 'dbx:doc' }),
+      })
+      mockCopilotRetrieveFile({ [oldId]: stalePending })
+      // Capture the row's assemblyFileId at the moment deleteFile is called.
+      const idAtDelete: (string | null)[] = []
+      mockCopilot(
+        '/v1/files/:id',
+        async () => {
+          const [r] = await db.select().from(fileFolderSync).where(eq(fileFolderSync.id, row.id))
+          idAtDelete.push(r.assemblyFileId)
+          return HttpResponse.json({})
+        },
+        'delete',
+      )
+      mockRecreate()
+
+      await retryFailedSyncsForPortal(connection.portalId, [row])
+
+      expect(idAtDelete).toEqual([null]) // nulled before the delete ran
+      const after = await rowById(row.id)
+      expect(after.assemblyFileId).toBeTruthy()
+      expect(after.assemblyFileId).not.toBe(oldId)
+    })
   })
 })
