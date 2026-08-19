@@ -2,8 +2,8 @@ import httpStatus from 'http-status'
 import { z } from 'zod'
 import APIError from '@/errors/APIError'
 import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
-import CopilotConnectionError from '@/lib/copilot/errors/CopilotConnectionError'
 import type { Token } from '@/lib/copilot/types'
+import { getAssemblyTokenPayload } from '@/lib/copilot/utils'
 import logger from '@/lib/logger'
 
 class User {
@@ -18,14 +18,14 @@ class User {
   ) {
     this.internalUserId = tokenPayload.internalUserId
     this.portalId = tokenPayload.workspaceId
-    this.copilot = copilot || new CopilotAPI(token)
+    this.copilot = copilot || new CopilotAPI(tokenPayload.workspaceId)
   }
 
   /**
    * Authenticates a Copilot user by token
    * @param token
    * @returns User instance modeled from the token payload
-   * @throws CopilotConnectionError when unable to connect to Copilot API
+   * @throws APIError when the token is missing or cannot be decoded
    */
   static async authenticate(token?: unknown): Promise<User> {
     logger.info('User#authenticate :: Authenticating user', token)
@@ -41,26 +41,13 @@ class User {
       throw new APIError('Token parse error', httpStatus.UNAUTHORIZED)
     }
 
-    let copilot: CopilotAPI
-    try {
-      copilot = new CopilotAPI(tokenParsed.data)
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Unable to authorize Copilot SDK')) {
-        throw new APIError(
-          'Unable to authorize Copilot with provided token',
-          httpStatus.UNAUTHORIZED,
-        )
-      }
-      logger.error('User#authenticate :: Error while initializing Copilot client', err)
-      throw new CopilotConnectionError()
-    }
-
-    const tokenPayload = await copilot.getTokenPayload()
+    const tokenPayload = await getAssemblyTokenPayload(tokenParsed.data)
     if (!tokenPayload) {
       throw new APIError('Unable to decode Copilot token payload', httpStatus.UNAUTHORIZED)
     }
 
-    return new User(tokenParsed.data, tokenPayload, copilot)
+    // SDK is built lazily, so auth errors surface on the first API call.
+    return new User(tokenParsed.data, tokenPayload)
   }
 }
 

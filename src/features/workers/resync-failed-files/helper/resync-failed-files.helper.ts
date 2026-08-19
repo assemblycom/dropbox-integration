@@ -349,7 +349,7 @@ const initializeSyncDependencies = async (
   })
 
   const user = await User.authenticate(token)
-  const copilotApi = new CopilotAPI(token)
+  const copilotApi = new CopilotAPI(portalId)
   const dbxClient = new DropboxClient(refreshToken, rootNamespaceId)
   const connectionToken = { refreshToken, accountId, rootNamespaceId }
   const syncService = new SyncService(user, connectionToken)

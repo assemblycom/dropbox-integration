@@ -276,7 +276,7 @@ export const initiateAssemblyToDropboxSync = task({
     const dbxAuth = new DropboxAuthClient()
 
     // 1. get al the files from the assembly
-    const copilotApi = new CopilotAPI(payload.user.token)
+    const copilotApi = new CopilotAPI(payload.user.portalId)
     let files = await copilotApi.listFiles(payload.assemblyChannelId)
 
     while (files.data.length) {
