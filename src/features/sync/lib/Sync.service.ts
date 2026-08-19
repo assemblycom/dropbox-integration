@@ -25,7 +25,7 @@ import type {
   WhereClause,
 } from '@/features/sync/types'
 import { copilotBottleneck } from '@/lib/copilot/bottleneck'
-import { CopilotAPI, isCopilotApiError } from '@/lib/copilot/CopilotAPI'
+import { type CopilotAPI, isCopilotApiError } from '@/lib/copilot/CopilotAPI'
 import type User from '@/lib/copilot/models/User.model'
 import type { CopilotFileRetrieve } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
@@ -478,7 +478,7 @@ export class SyncService extends AuthenticatedDropboxService {
         return
       }
 
-      const copilotApi = new CopilotAPI(this.user.token)
+      const copilotApi = this.copilot
       const fileCreateResponse = await copilotApi.createFile(
         assemblyCreatePath,
         assemblyChannelId,
@@ -573,7 +573,7 @@ export class SyncService extends AuthenticatedDropboxService {
       entry,
     } = params
     const target = assemblyCreatePath.toLowerCase()
-    const copilotApi = new CopilotAPI(this.user.token)
+    const copilotApi = this.copilot
 
     let nextToken: string | undefined
     do {
@@ -634,7 +634,7 @@ export class SyncService extends AuthenticatedDropboxService {
       assemblyCreatePath,
       assemblyPathOverride,
     } = params
-    const copilotApi = new CopilotAPI(this.user.token)
+    const copilotApi = this.copilot
 
     const fileCreateResponse = await copilotApi.createFile(
       assemblyPathOverride ?? assemblyCreatePath,
@@ -1014,7 +1014,7 @@ export class SyncService extends AuthenticatedDropboxService {
   }
 
   private async deleteAssemblyFileQuietly(assemblyFileId: string) {
-    const copilotApi = new CopilotAPI(this.user.token)
+    const copilotApi = this.copilot
     try {
       await copilotApi.deleteFile(assemblyFileId)
     } catch (error) {

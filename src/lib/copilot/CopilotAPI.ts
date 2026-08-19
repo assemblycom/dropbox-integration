@@ -1,21 +1,16 @@
 import 'server-only'
 
-import type { CopilotAPI as SDK } from 'copilot-node-sdk'
-import { copilotApi } from 'copilot-node-sdk'
+import { assemblyApi, type AssemblyAPI as SDK } from '@assembly-js/node-sdk'
 import fetch from 'node-fetch'
-import z from 'zod'
 import env from '@/config/server.env'
-import { MAX_FETCH_COPILOT_RESOURCES } from '@/constants/limits'
 import type { ObjectTypeValue } from '@/db/constants'
 import { MAX_FILES_LIMIT } from '@/features/sync/constant'
 import {
-  type ClientRequest,
   type ClientResponse,
   ClientResponseSchema,
   ClientsResponseSchema,
   type CompaniesResponse,
   CompaniesResponseSchema,
-  type CompanyCreateRequest,
   type CompanyResponse,
   CompanyResponseSchema,
   CopilotFileChannelListSchema,
@@ -26,20 +21,7 @@ import {
   type CopilotFileRetrieve,
   CopilotFileRetrieveSchema,
   type CopilotListArgs,
-  type CopilotPrice,
-  CopilotPriceSchema,
-  type CopilotProduct,
-  CopilotProductSchema,
   type CreateFileType,
-  type InternalUser,
-  InternalUserSchema,
-  type InternalUsersResponse,
-  InternalUsersResponseSchema,
-  type NotificationCreatedResponse,
-  NotificationCreatedResponseSchema,
-  type NotificationRequestBody,
-  type Token,
-  TokenSchema,
   type WorkspaceResponse,
   WorkspaceResponseSchema,
 } from '@/lib/copilot/types'
@@ -47,7 +29,7 @@ import logger from '@/lib/logger'
 import { withRetry } from '@/lib/withRetry'
 
 // Structural shape of the SDK's `ApiError` (declared in
-// `copilot-node-sdk/dist/codegen/api/core/ApiError`). The class itself is not
+// `@assembly-js/node-sdk/dist/codegen/api/core/ApiError`). The class itself is not
 // re-exported from the package's public entry point, so we identify it by
 // shape instead of `instanceof` — that avoids reaching into `node_modules`
 // internals, which would break on any minor SDK update. We check `url` +
@@ -60,6 +42,9 @@ export type CopilotApiError = Error & {
   statusText: string
   body: { message?: string } & Record<string, unknown>
 }
+
+// SDK's file type enum. Our ObjectType has the same string values, so we cast.
+type AssemblyCreateFileType = Parameters<SDK['createFile']>[0]['requestBody']['type']
 
 export function isCopilotApiError(error: unknown): error is CopilotApiError {
   if (!(error instanceof Error)) return false
@@ -79,142 +64,47 @@ export function isCopilotApiError(error: unknown): error is CopilotApiError {
 }
 
 export class CopilotAPI {
-  readonly copilot: SDK
+  readonly assemblySdk: Promise<SDK>
 
-  constructor(
-    private readonly token: string,
-    readonly customApiKey?: string,
-  ) {
-    this.copilot = copilotApi({
-      apiKey: customApiKey ?? env.COPILOT_API_KEY,
-      token,
-    })
+  constructor(private readonly workspaceId: string) {
+    this.assemblySdk = assemblyApi({ apiKey: `${this.workspaceId}/${env.COPILOT_API_KEY}` })
+    // Swallow here so an unused instance can't throw an unhandled rejection.
+    void this.assemblySdk.catch(() => undefined)
   }
 
   // NOTE: Any method prefixed with _ is a API method that doesn't implement retry & delay
   // NOTE: Any normal API method name implements `withRetry` with default config
 
-  // Get Token Payload from copilot request token
-  async _getTokenPayload(): Promise<Token | null> {
-    const getTokenPayload = this.copilot.getTokenPayload
-    if (!getTokenPayload) {
-      logger.error(
-        `CopilotAPI#getTokenPayload | Could not parse token payload for token ${this.token}`,
-      )
-      return null
-    }
-
-    return TokenSchema.parse(await getTokenPayload())
-  }
-
   async _getWorkspace(): Promise<WorkspaceResponse> {
     logger.info('CopilotAPI#_getWorkspace')
-    return WorkspaceResponseSchema.parse(await this.copilot.retrieveWorkspace())
-  }
-
-  async _createClient(
-    requestBody: ClientRequest,
-    sendInvite: boolean = false,
-  ): Promise<ClientResponse> {
-    logger.info('CopilotAPI#_createClient', requestBody, sendInvite)
-    return ClientResponseSchema.parse(await this.copilot.createClient({ sendInvite, requestBody }))
+    const sdk = await this.assemblySdk
+    return WorkspaceResponseSchema.parse(await sdk.retrieveWorkspace())
   }
 
   async _getClient(id: string): Promise<ClientResponse> {
     logger.info('CopilotAPI#_getClient', id)
-    return ClientResponseSchema.parse(await this.copilot.retrieveClient({ id }))
+    const sdk = await this.assemblySdk
+    return ClientResponseSchema.parse(await sdk.retrieveClient({ id }))
   }
 
   async _getClients(args: CopilotListArgs & { companyId?: string } = {}) {
     logger.info('CopilotAPI#_getClients', args)
-    return ClientsResponseSchema.parse(await this.copilot.listClients(args))
-  }
-
-  async _updateClient(id: string, requestBody: ClientRequest): Promise<ClientResponse> {
-    logger.info('CopilotAPI#_updateClient', id)
-    return ClientResponseSchema.parse(await this.copilot.updateClient({ id, requestBody }))
-  }
-
-  async _deleteClient(id: string) {
-    logger.info('CopilotAPI#_deleteClient', id)
-    return await this.copilot.deleteClient({ id })
-  }
-
-  async _createCompany(requestBody: CompanyCreateRequest) {
-    logger.info('CopilotAPI#_createCompany', requestBody)
-    return CompanyResponseSchema.parse(await this.copilot.createCompany({ requestBody }))
+    const sdk = await this.assemblySdk
+    return ClientsResponseSchema.parse(await sdk.listClients(args))
   }
 
   async _getCompany(id: string): Promise<CompanyResponse> {
     logger.info('CopilotAPI#_getCompany', id)
-    return CompanyResponseSchema.parse(await this.copilot.retrieveCompany({ id }))
+    const sdk = await this.assemblySdk
+    return CompanyResponseSchema.parse(await sdk.retrieveCompany({ id }))
   }
 
   async _getCompanies(
     args: CopilotListArgs & { isPlaceholder?: boolean } = {},
   ): Promise<CompaniesResponse> {
     logger.info('CopilotAPI#_getCompanies', args)
-    return CompaniesResponseSchema.parse(await this.copilot.listCompanies(args))
-  }
-
-  async _getCompanyClients(companyId: string): Promise<ClientResponse[]> {
-    logger.info('CopilotAPI#_getCompanyClients', companyId)
-    return (await this.getClients({ limit: 10000, companyId })).data || []
-  }
-
-  async _getInternalUsers(args: CopilotListArgs = {}): Promise<InternalUsersResponse> {
-    logger.info('CopilotAPI#_getInternalUsers', args)
-    return InternalUsersResponseSchema.parse(await this.copilot.listInternalUsers(args))
-  }
-
-  async _getInternalUser(id: string): Promise<InternalUser> {
-    logger.info('CopilotAPI#_getInternalUser', id)
-    return InternalUserSchema.parse(await this.copilot.retrieveInternalUser({ id }))
-  }
-
-  async _createNotification(
-    requestBody: NotificationRequestBody,
-  ): Promise<NotificationCreatedResponse> {
-    logger.info('CopilotAPI#_createNotification', requestBody)
-    const notification = await this.copilot.createNotification({ requestBody })
-    return NotificationCreatedResponseSchema.parse(notification)
-  }
-
-  /**
-   * Returns an object with product ID as key and product as value
-   * @param productIds Products to get details for
-   */
-  async _getProducts(
-    productIds: string[],
-    args: CopilotListArgs = { limit: MAX_FETCH_COPILOT_RESOURCES },
-  ): Promise<Record<string, CopilotProduct>> {
-    const allProductsResponse = await this.copilot.listProducts(args)
-    const allProducts = z.array(CopilotProductSchema).parse(allProductsResponse.data)
-
-    return allProducts.reduce<Record<string, CopilotProduct>>((acc, product) => {
-      if (productIds.includes(product.id)) {
-        acc[product.id] = product
-      }
-      return acc
-    }, {})
-  }
-
-  /**
-   * Returns an object with price ID as key and price as value
-   * @param priceIds Prices to get details for
-   */
-  async _getPrices(
-    priceIds: string[],
-    args = { limit: '10_000' },
-  ): Promise<Record<string, CopilotPrice>> {
-    const allPricesResponse = await this.copilot.listPrices(args)
-    const allPrices = z.array(CopilotPriceSchema).parse(allPricesResponse.data)
-    return allPrices.reduce<Record<string, CopilotPrice>>((acc, price) => {
-      if (priceIds.includes(price.id)) {
-        acc[price.id] = price
-      }
-      return acc
-    }, {})
+    const sdk = await this.assemblySdk
+    return CompaniesResponseSchema.parse(await sdk.listCompanies(args))
   }
 
   async _createFile(
@@ -224,12 +114,13 @@ export class CopilotAPI {
   ): Promise<CreateFileType> {
     // Names are validated upstream (SyncService); path passes through unchanged.
     console.info(`CopilotAPI#_createFile. Path: ${path}`)
-
-    const createFileResponse = await this.copilot.createFile({
+    const sdk = await this.assemblySdk
+    const createFileResponse = await sdk.createFile({
       fileType,
       requestBody: {
         path,
-        channelId,
+        channelID: channelId,
+        type: fileType as unknown as AssemblyCreateFileType,
       },
     })
     return CopilotFileCreateSchema.parse(createFileResponse)
@@ -251,7 +142,8 @@ export class CopilotAPI {
   }
 
   async _deleteFile(id: string) {
-    return await this.copilot.deleteFile({ id })
+    const sdk = await this.assemblySdk
+    return await sdk.deleteFile({ id })
   }
 
   async _listFiles(
@@ -259,7 +151,8 @@ export class CopilotAPI {
     nextToken?: string,
     customLimit?: number,
   ): Promise<CopilotFileList> {
-    const list = await this.copilot.listFiles({
+    const sdk = await this.assemblySdk
+    const list = await sdk.listFiles({
       channelId,
       nextToken,
       limit: customLimit || MAX_FILES_LIMIT,
@@ -268,17 +161,20 @@ export class CopilotAPI {
   }
 
   async _retrieveFile(id: string): Promise<CopilotFileRetrieve> {
-    const file = await this.copilot.retrieveFile({ id })
+    const sdk = await this.assemblySdk
+    const file = await sdk.retrieveFile({ id })
     return CopilotFileRetrieveSchema.parse(file)
   }
 
   async _retrieveFileChannel(id: string) {
-    const fileChannel = await this.copilot.retrieveFileChannel({ id })
+    const sdk = await this.assemblySdk
+    const fileChannel = await sdk.retrieveFileChannel({ id })
     return CopilotFileChannelRetrieveSchema.parse(fileChannel)
   }
 
   async _listFileChannels(args: CopilotListArgs & { companyId?: string; clientId?: string } = {}) {
-    const list = await this.copilot.listFileChannels(args)
+    const sdk = await this.assemblySdk
+    const list = await sdk.listFileChannels(args)
     return CopilotFileChannelListSchema.parse(list.data)
   }
 
@@ -289,22 +185,11 @@ export class CopilotAPI {
   }
 
   // Methods wrapped with retry
-  getTokenPayload = this.wrapWithRetry(this._getTokenPayload)
   getWorkspace = this.wrapWithRetry(this._getWorkspace)
-  createClient = this.wrapWithRetry(this._createClient)
   getClient = this.wrapWithRetry(this._getClient)
   getClients = this.wrapWithRetry(this._getClients)
-  updateClient = this.wrapWithRetry(this._updateClient)
-  deleteClient = this.wrapWithRetry(this._deleteClient)
-  createCompany = this.wrapWithRetry(this._createCompany)
   getCompany = this.wrapWithRetry(this._getCompany)
   getCompanies = this.wrapWithRetry(this._getCompanies)
-  getCompanyClients = this.wrapWithRetry(this._getCompanyClients)
-  getInternalUsers = this.wrapWithRetry(this._getInternalUsers)
-  getInternalUser = this.wrapWithRetry(this._getInternalUser)
-  createNotification = this.wrapWithRetry(this._createNotification)
-  getProductsById = this.wrapWithRetry(this._getProducts)
-  getPricesById = this.wrapWithRetry(this._getPrices)
   createFile = this.wrapWithRetry(this._createFile)
   uploadFile = this.wrapWithRetry(this._uploadFile)
   deleteFile = this.wrapWithRetry(this._deleteFile)

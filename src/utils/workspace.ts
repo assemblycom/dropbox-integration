@@ -1,5 +1,6 @@
 import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import type { WorkspaceResponse } from '@/lib/copilot/types'
+import { getAssemblyTokenPayload } from '@/lib/copilot/utils'
 
 export const getWorkspaceLabel = (
   workspace: WorkspaceResponse,
@@ -14,6 +15,11 @@ export const getWorkspaceLabel = (
 }
 
 export async function getWorkspace(token: string): Promise<WorkspaceResponse> {
-  const copilot = new CopilotAPI(token)
+  const tokenPayload = await getAssemblyTokenPayload(token)
+  if (!tokenPayload) {
+    throw new Error('Unable to decode Copilot token payload')
+  }
+
+  const copilot = new CopilotAPI(tokenPayload.workspaceId)
   return await copilot.getWorkspace()
 }

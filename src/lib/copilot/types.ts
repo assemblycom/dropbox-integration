@@ -105,60 +105,6 @@ export const InternalUsersResponseSchema = z.object({
 })
 export type InternalUsersResponse = z.infer<typeof InternalUsersResponseSchema>
 
-/**
- * `senderType` field for notification payload in Copilot API
- */
-export const NotificationSenderSchema = z.enum(['internalUser', 'client'])
-export type NotificationSender = z.infer<typeof NotificationSenderSchema>
-
-/**
- * Notification RequestBody schema - accepted by SDK#createNotification
- */
-export const NotificationRequestBodySchema = z.object({
-  senderId: z.string(),
-  // New notification body schema for copilot to accomodate for multiple companies
-  senderType: NotificationSenderSchema,
-  senderCompanyId: z.string().optional(),
-  recipientInternalUserId: z.string().optional(),
-  recipientClientId: z.string().optional(),
-  recipientCompanyId: z.string().optional(),
-  deliveryTargets: z
-    .object({
-      inProduct: z
-        .object({
-          title: z.string(),
-          body: z.string().optional(),
-        })
-        .optional(),
-      email: z
-        .object({
-          subject: z.string().optional(),
-          header: z.string().optional(),
-          title: z.string().optional(),
-          body: z.string().optional(),
-        })
-        .optional(),
-    })
-    .optional(),
-})
-export type NotificationRequestBody = z.infer<typeof NotificationRequestBodySchema>
-
-export const NotificationCreatedResponseSchema = z.object({
-  id: z.string(),
-  appId: z.uuid().optional(),
-  createdAt: z.iso.datetime(),
-  event: z.string().optional(),
-  object: z.string().optional(),
-  companyId: z.string().optional(),
-  recipientInternalUserId: z.string().optional(),
-  recipientClientId: z.string().optional(),
-  recipientCompanyId: z.string().optional(),
-  resourceId: z.string().optional(),
-  senderId: z.string().optional(),
-  senderType: z.string().optional(),
-})
-export type NotificationCreatedResponse = z.infer<typeof NotificationCreatedResponseSchema>
-
 export const CopilotProductSchema = z.object({
   id: z.string(),
   name: z.string(),
