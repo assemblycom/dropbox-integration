@@ -122,12 +122,13 @@ export function mockCopilotCreateFile(opts: { uploadUrl?: string } = {}): void {
   mockCopilot(
     '/v1/files/:fileType',
     async ({ request, params }) => {
-      const { path, channelId } = (await request.json()) as { path: string; channelId: string }
+      // The SDK sends `channelID` (capital ID); the response echoes `channelId`.
+      const { path, channelID } = (await request.json()) as { path: string; channelID: string }
       const fileType = params.fileType as string
       return HttpResponse.json({
         // Real Copilot returns a UUID; callers persist it into a uuid() column.
         id: randomUUID(),
-        channelId,
+        channelId: channelID,
         name: nameOf(path),
         object: fileType,
         path,
