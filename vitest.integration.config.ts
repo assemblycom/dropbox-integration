@@ -19,12 +19,9 @@ export default defineConfig({
     globalSetup: ['./test/integration/global-setup.ts'],
     setupFiles: ['./test/integration/setup.ts'],
     server: {
-      // `copilot-node-sdk` is a pure-ESM package whose dist does an internal
-      // directory import (`../codegen/api`, resolved to its `index.js` only by
-      // bundler-style resolution). Node's native ESM loader can't resolve that
-      // when Vite externalizes the package, so force it through Vite's own
-      // resolver instead.
-      deps: { inline: ['copilot-node-sdk'] },
+      // `@assembly-js/node-sdk` uses an internal directory import that Node's
+      // ESM loader can't resolve, so force it through Vite's resolver.
+      deps: { inline: ['@assembly-js/node-sdk'] },
     },
     // One container, one shared DB — run files serially so truncate-between-tests
     // isolation is safe.

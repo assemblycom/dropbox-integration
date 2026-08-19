@@ -1,4 +1,4 @@
-import { copilotApi } from 'copilot-node-sdk'
+import { assemblyApi } from '@assembly-js/node-sdk'
 import { DropboxResponseError } from 'dropbox'
 import { HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -31,7 +31,7 @@ describe('MSW harness — base handlers + hosts', () => {
   })
 
   it('serves an empty Copilot file page to the real SDK (undici fetch)', async () => {
-    const page = await new CopilotAPI('token')._listFiles('ch_1')
+    const page = await new CopilotAPI('ws_1')._listFiles('ch_1')
     expect(page.data).toEqual([])
   })
 
@@ -56,7 +56,7 @@ describe('MSW harness — base handlers + hosts', () => {
 describe('MSW harness — Copilot error shapes', () => {
   it('reproduces isCopilotApiError 400 "Folder already exists"', async () => {
     mockCopilot('/v1/files', () => copilotFolderExists())
-    const client = copilotApi({ apiKey: 'k', token: 't' })
+    const client = await assemblyApi({ apiKey: 'k', token: 't' })
     try {
       await client.listFiles({ channelId: 'ch' })
       expect.unreachable('listFiles should have thrown')
@@ -71,7 +71,7 @@ describe('MSW harness — Copilot error shapes', () => {
 
   it('reproduces isCopilotApiError 404', async () => {
     mockCopilot('/v1/files', () => copilotNotFound())
-    const client = copilotApi({ apiKey: 'k', token: 't' })
+    const client = await assemblyApi({ apiKey: 'k', token: 't' })
     try {
       await client.listFiles({ channelId: 'ch' })
       expect.unreachable('listFiles should have thrown')
@@ -136,7 +136,7 @@ describe('MSW harness — pagination', () => {
       path: `/f${i}`,
     }))
     server.use(paginateCopilotListFiles(items, { pageSize: 100 }))
-    const api = new CopilotAPI('token')
+    const api = new CopilotAPI('ws_1')
     const all: unknown[] = []
     let nextToken: string | undefined
     do {

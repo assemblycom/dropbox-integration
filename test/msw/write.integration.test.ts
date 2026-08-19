@@ -79,13 +79,13 @@ describe('Dropbox content handlers', () => {
 describe('Copilot create-file handler', () => {
   it('createFile(folder) returns folder metadata (no upload URL needed)', async () => {
     mockCopilotCreateFile()
-    const res = await new CopilotAPI('token').createFile('/folder', 'ch-1', ObjectType.FOLDER)
+    const res = await new CopilotAPI('ws_1').createFile('/folder', 'ch-1', ObjectType.FOLDER)
     expect(res.object).toBe(ObjectType.FOLDER)
   })
 
   it('createFile(file) returns an uploadUrl that accepts a PUT', async () => {
     mockCopilotCreateFile()
-    const api = new CopilotAPI('token')
+    const api = new CopilotAPI('ws_1')
     const created = await api.createFile('/a.txt', 'ch-1', ObjectType.FILE)
     expect(created.uploadUrl).toBeTruthy()
     const put = await api.uploadFile(created.uploadUrl as string, '5', null)
@@ -103,14 +103,14 @@ describe('delta handlers (webhook flow)', () => {
   it('retrieveFile returns the file for a known id and 404s an unknown one', async () => {
     const file = copilotFileFactory.build()
     mockCopilotRetrieveFile({ [file.id]: file })
-    const api = new CopilotAPI('token')
+    const api = new CopilotAPI('ws_1')
     expect((await api.retrieveFile(file.id)).id).toBe(file.id)
     await expect(api.retrieveFile('missing-id')).rejects.toMatchObject({ status: 404 })
   })
 
   it('deleteFile hits the Copilot DELETE handler and captures the id', async () => {
     const { deletedIds } = mockCopilotDeleteFile()
-    await expect(new CopilotAPI('token').deleteFile('file-id')).resolves.toBeDefined()
+    await expect(new CopilotAPI('ws_1').deleteFile('file-id')).resolves.toBeDefined()
     expect(deletedIds).toEqual(['file-id'])
   })
 
