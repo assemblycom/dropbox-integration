@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
 import { channelSync } from '@/db/schema/channelSync.schema'
+import { dropboxConnections } from '@/db/schema/dropboxConnections.schema'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
 import { getDropboxChanges } from '@/features/webhook/dropbox/utils/getDropboxChanges'
@@ -181,5 +182,25 @@ describe('getDropboxChanges', () => {
     expect(paths).toContain('/root/a.txt')
     expect(paths).toContain('/ROOT/c.txt') // case-insensitive prefix
     expect(paths).not.toContain('/other/b.txt')
+  })
+})
+
+// fetchDropBoxChanges bails out before doing any work if the connection can't be used.
+describe('fetchDropBoxChanges guards', () => {
+  it('returns early when the account has no active connection', async () => {
+    // No connection seeded — a stray Dropbox/Copilot call would trip onUnhandledRequest:'error'.
+    await expect(new DropboxWebhook().fetchDropBoxChanges('ghost-account')).resolves.toBeUndefined()
+  })
+
+  it('returns early when the connection has no refresh token', async () => {
+    await dropboxConnectionSeeder.create({ accountId: 'acc-no-rt', refreshToken: null })
+
+    await new DropboxWebhook().fetchDropBoxChanges('acc-no-rt')
+
+    const [row] = await db
+      .select()
+      .from(dropboxConnections)
+      .where(eq(dropboxConnections.accountId, 'acc-no-rt'))
+    expect(row.lastWebhookSyncedAt).toBeNull() // bailed before the end-of-sync stamp
   })
 })
