@@ -412,7 +412,7 @@ describe('resync sweep', () => {
     expect(after.deletedAt).toBeNull() // never dispatched to a real handler
   })
 
-  // --- retryDeleteInAssembly guard + error branches (case 132) ---
+  // --- retryDeleteInAssembly guard + error branches ---
   describe('retryDeleteInAssembly branches', () => {
     it('soft-deletes a row that has no assemblyFileId (nothing to delete in Assembly)', async () => {
       const { connection, channel } = await seed()
@@ -452,7 +452,7 @@ describe('resync sweep', () => {
       expect(after.pendingAction).toBeNull()
     })
 
-    it('marks the row failed on a non-404 Copilot error (rethrow)', async () => {
+    it('marks the row failed on any other Copilot error', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create({
         ...synced(),
@@ -475,7 +475,7 @@ describe('resync sweep', () => {
     })
   })
 
-  // --- retryDeleteInDropbox guard + error branches (case 133) ---
+  // --- retryDeleteInDropbox guard + error branches ---
   describe('retryDeleteInDropbox branches', () => {
     const baseRow = (channelId: string) => ({
       ...pendingDelete(PendingActionTarget.DROPBOX),
@@ -508,7 +508,7 @@ describe('resync sweep', () => {
       expect(after.deletedAt).not.toBeNull()
     })
 
-    it('treats a 409 path_lookup/not_found as already-gone and soft-deletes', async () => {
+    it('treats a Dropbox "not found" as already-gone and soft-deletes', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       mockDropboxDeleteFile({ error: dropboxPathLookupNotFound })
@@ -519,7 +519,7 @@ describe('resync sweep', () => {
       expect(after.deletedAt).not.toBeNull()
     })
 
-    it('marks the row failed on any other Dropbox error (rethrow)', async () => {
+    it('marks the row failed on any other Dropbox error', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       mockDropboxDeleteFile({
@@ -539,7 +539,7 @@ describe('resync sweep', () => {
     })
   })
 
-  // --- retryCreateInDropbox guard + error branches (case 134) ---
+  // --- retryCreateInDropbox guard + error branches ---
   describe('retryCreateInDropbox branches', () => {
     const baseRow = (channelId: string) => ({
       ...synced(),
@@ -589,7 +589,7 @@ describe('resync sweep', () => {
       expect(after.pendingActionLastError).toContain('channelSync missing')
     })
 
-    it('soft-deletes when the Assembly file is 404 on retrieve', async () => {
+    it('soft-deletes when the Assembly file no longer exists', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       mockCopilotRetrieveFile({}) // unknown id → 404
@@ -600,7 +600,7 @@ describe('resync sweep', () => {
       expect(after.deletedAt).not.toBeNull()
     })
 
-    it('marks the row failed (retry later) when the Assembly file is still pending', async () => {
+    it('marks the row failed when the Assembly file is still uploading', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       const pendingFile = copilotFileFactory.build({
@@ -617,7 +617,7 @@ describe('resync sweep', () => {
     })
   })
 
-  // --- retryCreateInAssembly + reconcile branches (cases 135, 136, 137) ---
+  // --- retryCreateInAssembly + reconcile branches ---
   describe('retryCreateInAssembly branches', () => {
     const baseRow = (channelId: string) => ({
       ...synced(),
@@ -675,7 +675,7 @@ describe('resync sweep', () => {
       expect(after.pendingActionLastError).toContain('channelSync missing')
     })
 
-    it('soft-deletes when the Dropbox source is gone (metadata not_found)', async () => {
+    it('soft-deletes when the Dropbox source no longer exists', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       mockDropboxGetMetadata({}) // dbxFileId path → 409 not_found → null
@@ -686,7 +686,7 @@ describe('resync sweep', () => {
       expect(after.deletedAt).not.toBeNull()
     })
 
-    it('soft-deletes when the Dropbox source is a deleted tombstone', async () => {
+    it('soft-deletes when the Dropbox source is already deleted', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       mockDropboxGetMetadata({
@@ -705,7 +705,7 @@ describe('resync sweep', () => {
       expect(after.deletedAt).not.toBeNull()
     })
 
-    it('marks the row failed (retried, not deleted) on a non-not_found Dropbox metadata error', async () => {
+    it('marks the row failed (kept for retry) on an unexpected Dropbox error', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create(baseRow(channel.id))
       mockDropboxRpc('/2/files/get_metadata', () =>
@@ -719,7 +719,7 @@ describe('resync sweep', () => {
       expect(after.pendingActionLastError).not.toBeNull()
     })
 
-    it('recreates the file when the row has no early-stamped assemblyFileId', async () => {
+    it('recreates the file when the row has no Assembly file id yet', async () => {
       const { connection, channel } = await seed()
       const row = await fileSyncSeeder.create({
         ...pendingCreate(PendingActionTarget.ASSEMBLY),
@@ -739,7 +739,7 @@ describe('resync sweep', () => {
       expect(after.deletedAt).toBeNull()
     })
 
-    it('recreates the file when the early-stamped Assembly file is 404', async () => {
+    it('recreates the file when the stamped Assembly file no longer exists', async () => {
       const { connection, channel } = await seed()
       const oldId = randomUUID()
       const row = await fileSyncSeeder.create({
@@ -762,7 +762,7 @@ describe('resync sweep', () => {
       expect(after.pendingAction).toBeNull()
     })
 
-    it('marks the row failed on a non-404 error while reconciling the Assembly file', async () => {
+    it('marks the row failed on an unexpected error while checking the Assembly file', async () => {
       const { connection, channel } = await seed()
       const oldId = randomUUID()
       const row = await fileSyncSeeder.create({
@@ -791,7 +791,7 @@ describe('resync sweep', () => {
       expect(after.pendingActionLastError).not.toBeNull()
     })
 
-    it('nulls the assemblyFileId BEFORE deleting the stale file (abandoned reconcile ordering)', async () => {
+    it('clears the stored Assembly file id before deleting the stale file', async () => {
       const { connection, channel } = await seed()
       const oldId = randomUUID()
       const stalePending = copilotFileFactory.build({ id: oldId, status: 'pending' })

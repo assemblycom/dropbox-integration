@@ -164,7 +164,7 @@ describe('resyncLeafOnContentChange (via createLeafFileInAssembly path conflict)
     expect(completeSpy).not.toHaveBeenCalled()
   })
 
-  it('recreates at the existing Assembly path so a legacy invalid name still lands', async () => {
+  it('recreates the file at the existing Assembly path on the row', async () => {
     insertSpy
       .mockResolvedValueOnce(null) // path conflict
       .mockResolvedValueOnce(row({ id: 'row-2' })) // recreate insert

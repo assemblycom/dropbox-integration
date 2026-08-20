@@ -142,8 +142,8 @@ const folderParams = {
   basePath: '/John_s Cafe',
 }
 
-describe('createFolderInAssembly :: catch-branch discriminations (case 84)', () => {
-  it('stamps the existing row (no recovery) when the re-lookup finds a row', async () => {
+describe('createFolderInAssembly :: when the folder already exists in Assembly', () => {
+  it('updates the already-mapped row instead of searching Assembly', async () => {
     // Pre-check misses, create hits "Folder already exists", re-lookup now finds the row.
     vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath')
       .mockResolvedValueOnce(undefined as never)
@@ -171,7 +171,7 @@ describe('createFolderInAssembly :: catch-branch discriminations (case 84)', () 
   })
 })
 
-describe('recoverUnmappedAssemblyFolder :: paging + give-up (case 85)', () => {
+describe('recoverUnmappedAssemblyFolder :: finding the folder in Assembly', () => {
   beforeEach(() => {
     vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue(
       undefined as never,
@@ -179,7 +179,7 @@ describe('recoverUnmappedAssemblyFolder :: paging + give-up (case 85)', () => {
     createFileMock.mockRejectedValue(folderExistsError)
   })
 
-  it('finds the folder on a later listFiles page (nextToken pagination)', async () => {
+  it('finds the folder on a later page of results', async () => {
     listFilesMock
       .mockResolvedValueOnce({
         data: [{ id: 'asm:other', object: 'folder', path: 'Other' }],
@@ -205,7 +205,7 @@ describe('recoverUnmappedAssemblyFolder :: paging + give-up (case 85)', () => {
     )
   })
 
-  it('gives up silently (no insert, no throw) when the folder is never found', async () => {
+  it('does nothing when the folder is not found on any page', async () => {
     listFilesMock.mockResolvedValueOnce({
       data: [{ id: 'asm:other', object: 'folder', path: 'Other' }],
       nextToken: undefined,
@@ -220,8 +220,8 @@ describe('recoverUnmappedAssemblyFolder :: paging + give-up (case 85)', () => {
   })
 })
 
-describe('handleFolderCreatedCase :: no-op guard (case 86)', () => {
-  it('does not stamp dbxFileId when the entry is not the last folder item', async () => {
+describe('handleFolderCreatedCase :: stamping the folder id', () => {
+  it('does not update the row when this is not the folder entry itself', async () => {
     // Folder already mapped → create is skipped and handleFolderCreatedCase is a no-op
     // because lastItem is false.
     vi.spyOn(service.mapFilesService, 'getDbxMappedFileFromPath').mockResolvedValue({
