@@ -1,8 +1,11 @@
 import { eq } from 'drizzle-orm'
+import { HttpResponse, http } from 'msw'
 import { describe, expect, it } from 'vitest'
 import db from '@/db'
+import { ObjectType, PendingActionTarget } from '@/db/constants'
 import { channelSync } from '@/db/schema/channelSync.schema'
 import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
+import { SyncService } from '@/features/sync/lib/Sync.service'
 import User from '@/lib/copilot/models/User.model'
 import type { Token } from '@/lib/copilot/types'
 import { initiateDropboxToAssemblySync } from '@/trigger/processFileSync'
@@ -13,7 +16,7 @@ import {
   paginateDropboxListFolder,
   server,
 } from '../msw'
-import { channelSeeder, dropboxConnectionSeeder } from '../seeders'
+import { channelSeeder, dropboxConnectionSeeder, fileSyncSeeder, pendingCreate } from '../seeders'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -119,5 +122,64 @@ describe('initial sync: Dropbox -> Assembly', () => {
     expect(ch.dbxCursor).toBe('cursor:3') // paginateDropboxListFolder cursor after 3 entries
     expect(ch.lastSyncedAt).not.toBeNull()
     expect(ch.syncedFilesCount).toBe(3)
+  })
+})
+
+// The leaf create stamps assemblyFileId onto the row BEFORE uploading the bytes, so a
+// concurrent Assembly "file.created" echo dedupes against the row instead of re-creating.
+describe('completePendingAssemblyCreate ordering', () => {
+  it('saves the Assembly file id before uploading the file', async () => {
+    const connection = await dropboxConnectionSeeder.create({
+      accountId: 'acc-stamp',
+      rootNamespaceId: 'ns',
+      refreshToken: 'rt',
+    })
+    const channel = await channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: '/root',
+    })
+    const user = new User('test-token', { workspaceId: connection.portalId } as Token)
+    const svc = new SyncService(user, {
+      refreshToken: 'rt',
+      accountId: 'acc-stamp',
+      rootNamespaceId: 'ns',
+    })
+    const row = await fileSyncSeeder.create({
+      ...pendingCreate(PendingActionTarget.ASSEMBLY),
+      channelSyncId: channel.id,
+      itemPath: '/f.txt',
+      dbxFileId: 'dbx:f',
+      object: ObjectType.FILE,
+    })
+    const entry = dropboxEntryFactory.build({
+      id: 'dbx:f',
+      name: 'f.txt',
+      path_display: '/root/f.txt',
+      content_hash: 'h',
+    })
+
+    const uploadUrl = 'https://upload.example/put'
+    mockCopilotCreateFile({ uploadUrl })
+    mockDropboxDownload({ '/root/f.txt': 'bytes' })
+    // Capture the row's assemblyFileId at the moment the upload PUT fires.
+    const idAtUpload: (string | null)[] = []
+    server.use(
+      http.put(uploadUrl, async () => {
+        const [r] = await db.select().from(fileFolderSync).where(eq(fileFolderSync.id, row.id))
+        idAtUpload.push(r.assemblyFileId)
+        return new HttpResponse(null, { status: 200 })
+      }),
+    )
+
+    await svc.completePendingAssemblyCreate({
+      pendingRowId: row.id,
+      assemblyChannelId: channel.assemblyChannelId,
+      channelSyncId: channel.id,
+      entry,
+      assemblyCreatePath: '/f.txt',
+    })
+
+    expect(idAtUpload).toHaveLength(1)
+    expect(idAtUpload[0]).toBeTruthy() // id was already stamped before the upload ran
   })
 })

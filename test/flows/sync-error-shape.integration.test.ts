@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 import db from '@/db'
 import { ObjectType, type ObjectTypeValue } from '@/db/constants'
+import { channelSync } from '@/db/schema/channelSync.schema'
 import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import { SyncService } from '@/features/sync/lib/Sync.service'
 import type { DropboxFileListFolderSingleEntry } from '@/features/sync/types'
@@ -13,6 +14,7 @@ import {
   copilotNotFound,
   type DropboxMeta,
   dropboxFileMetadata,
+  dropboxFolderMetadata,
   dropboxPathLookupNotFound,
   dropboxRpcError,
   mockAssemblyFileDownload,
@@ -117,6 +119,49 @@ describe('Dropbox create-vs-update: dead-end branches throw', () => {
     expect(moves[0].from).toBe('/root/dup.txt')
     expect(moves[0].to).toMatch(/\/root\/dup \(\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}\)\.txt$/)
     expect(result?.dbxFileId).toBe('id:dbx:/root/dup.txt')
+  })
+
+  it('returns the existing folder id without uploading when the folder already exists', async () => {
+    const svc = makeService('portal-x')
+    const file = copilotFileFactory.build({ path: 'existing-folder' })
+    // A folder already lives at the path → return its id, no move/upload.
+    mockDropboxGetMetadata({
+      '/root/existing-folder': dropboxFolderMetadata({
+        path_display: '/root/existing-folder',
+        id: 'dbx:existing-folder',
+      }),
+    })
+    // No move/upload mocks: a stray call would trip onUnhandledRequest:'error'.
+
+    const result = await svc.createAndUploadFileInDropbox('/root', ObjectType.FOLDER, file)
+
+    expect(result).toEqual({ dbxFileId: 'dbx:existing-folder' })
+  })
+})
+
+// handleChannelMap validates the Dropbox root path before recording its id.
+describe('handleChannelMap', () => {
+  type ChannelMapSvc = { handleChannelMap(channelId: string, rootPath: string): Promise<void> }
+
+  it('saves the Dropbox root folder id when the root path is a folder', async () => {
+    const { channel, svc } = await seed()
+    mockDropboxGetMetadata({
+      '/root': dropboxFolderMetadata({ path_display: '/root', id: 'id:root' }),
+    })
+
+    await (svc as unknown as ChannelMapSvc).handleChannelMap(channel.assemblyChannelId, '/root')
+
+    const [after] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(after.dbxRootId).toBe('id:root')
+  })
+
+  it('rejects a root path that is not a folder with a 400', async () => {
+    const svc = makeService('portal-x')
+    mockDropboxGetMetadata({ '/root': dropboxFileMetadata({ path_display: '/root' }) })
+
+    await expect(
+      (svc as unknown as ChannelMapSvc).handleChannelMap('ch-x', '/root'),
+    ).rejects.toMatchObject({ status: 400 })
   })
 })
 
