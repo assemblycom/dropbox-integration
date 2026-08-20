@@ -168,3 +168,31 @@ describe('ResyncService#resyncFailedFilesForChannel guards', () => {
     expect((await channelById(channel.id)).resyncingAt).toBeNull()
   })
 })
+
+describe('MapFilesService#updateChannelMap', () => {
+  it('only updates the channel when the root path matches exactly', async () => {
+    const connection = await dropboxConnectionSeeder.create({ accountId: 'acc' })
+    const svc = makeMapService(connection.portalId)
+    const channel = await channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: '/root',
+    })
+
+    // Matching tuple (portal + account + channel + root path) → updates.
+    const updated = await svc.updateChannelMap(
+      { dbxRootId: 'id:new' },
+      channel.assemblyChannelId,
+      '/root',
+    )
+    expect(updated?.dbxRootId).toBe('id:new')
+
+    // A stale root path no longer matches, so nothing is updated.
+    const noMatch = await svc.updateChannelMap(
+      { dbxRootId: 'id:stale' },
+      channel.assemblyChannelId,
+      '/moved-root',
+    )
+    expect(noMatch).toBeUndefined()
+    expect((await channelById(channel.id)).dbxRootId).toBe('id:new') // unchanged by the stale call
+  })
+})
