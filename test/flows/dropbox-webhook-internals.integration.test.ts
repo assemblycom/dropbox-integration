@@ -39,7 +39,7 @@ afterEach(() => vi.restoreAllMocks())
 // the root path when Dropbox reports it moved. The metadata call is wrapped in a
 // long-backoff withRetry, so we inject the outcome at the getDropboxFileMetadata seam.
 describe('handleDbxRootPathMove', () => {
-  it('recovers a moved root path: re-fetches by id, refreshes the cursor, updates the map, skips the cycle', async () => {
+  it('recovers the root path when the folder was moved, then skips the cycle', async () => {
     const { connection, mapFilesService, dbxClient } = await seed()
     const channel = await channelSeeder.create({
       portalId: connection.portalId,
@@ -159,7 +159,7 @@ describe('getDropboxChanges', () => {
     ).rejects.toThrow('Invalid Dropbox entries format')
   })
 
-  it('keeps only entries under the root path (case-insensitive), dropping the rest', async () => {
+  it('keeps only entries under the root path and ignores the rest', async () => {
     const { channel, mapFilesService, dbxClient } = await seedChannel()
     server.use(
       ...paginateDropboxListFolder([

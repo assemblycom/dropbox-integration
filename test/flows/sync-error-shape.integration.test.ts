@@ -95,7 +95,7 @@ describe('Dropbox create-vs-update: dead-end branches throw', () => {
     ).rejects.toThrow('returned undefined')
   })
 
-  it('renames the existing Dropbox file then re-uploads when a file already exists at the path', async () => {
+  it('renames the existing file and uploads the new one when a file already exists', async () => {
     const svc = makeService('portal-x')
     const file = copilotDownloadableFactory.build({ path: 'dup.txt' })
     // A file already lives at /root/dup.txt → rename-then-reupload branch.
