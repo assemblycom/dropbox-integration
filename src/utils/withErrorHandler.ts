@@ -48,14 +48,16 @@ export const withErrorHandler = (handler: RequestHandler): RequestHandler => {
         } else {
           logger.error('APIError:', error.error || error.message)
         }
-      } else if (error instanceof Error && error.message) {
-        message = error.message
-        logger.error('Error:', error)
       } else if (error instanceof DropboxResponseError) {
+        // Must precede the generic Error branch: DropboxResponseError extends Error
+        // with a truthy message, so checking Error first would hide error_summary.
         message = error.error.error_summary || `DropboxResponseError: ${message}`
         status = error.status
 
         logger.error('DropboxResponseError:', error.error)
+      } else if (error instanceof Error && error.message) {
+        message = error.message
+        logger.error('Error:', error)
       } else {
         message = 'Something went wrong'
         logger.error(error)
