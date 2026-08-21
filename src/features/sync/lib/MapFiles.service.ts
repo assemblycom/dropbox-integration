@@ -438,7 +438,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
     payload: ChannelSyncUpdatePayload,
     assemblyChannelId: string,
     dbxRootPath: string,
-  ): Promise<ChannelSyncSelectType> {
+  ): Promise<ChannelSyncSelectType | undefined> {
     logger.info(
       'MapFilesService#updateChannelMap :: Updating channel map',
       payload,
