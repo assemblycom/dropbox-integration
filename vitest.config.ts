@@ -19,5 +19,9 @@ export default defineConfig({
     // against a real Postgres container — keep them out of the fast unit run.
     exclude: ['**/*.integration.test.ts', '**/node_modules/**'],
     setupFiles: ['./vitest.setup.ts'],
+    server: {
+      // Force @assembly-js/node-sdk through Vite's resolver (Node ESM can't resolve its dist directory import).
+      deps: { inline: ['@assembly-js/node-sdk'] },
+    },
   },
 })
