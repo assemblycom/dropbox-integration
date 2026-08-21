@@ -1,3 +1,4 @@
+import { DropboxResponseError } from 'dropbox'
 import { NextResponse } from 'next/server'
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
@@ -42,5 +43,18 @@ describe('withErrorHandler', () => {
 
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'boom' })
+  })
+
+  it('maps a DropboxResponseError to its status and error_summary', async () => {
+    const res = await run(() => {
+      throw new DropboxResponseError(
+        409,
+        {} as never,
+        { error_summary: 'path/not_found/..' } as never,
+      )
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'path/not_found/..' })
   })
 })
