@@ -33,6 +33,17 @@ describe('fanOutAndWait', () => {
     ])
   })
 
+  it('merges the concurrencyKey into existing item options', async () => {
+    type Item = { payload: string; options?: Record<string, unknown> }
+    const task = { batchTriggerAndWait: vi.fn((_items: Item[]) => Promise.resolve()) }
+
+    await fanOutAndWait(task, [{ payload: 'a', options: { idempotencyKey: 'k1' } }], 'portal-1')
+
+    expect(task.batchTriggerAndWait.mock.calls[0][0]).toEqual([
+      { payload: 'a', options: { idempotencyKey: 'k1', concurrencyKey: 'portal-1' } },
+    ])
+  })
+
   it('chunks large fan-outs by BATCH_CHUNK_SIZE', async () => {
     const task = { batchTriggerAndWait: vi.fn(() => Promise.resolve()) }
     const items = Array.from({ length: BATCH_CHUNK_SIZE * 2 + 1 }, (_, i) => ({ payload: i }))
