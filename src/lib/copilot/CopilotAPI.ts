@@ -181,7 +181,8 @@ export class CopilotAPI {
   private wrapWithRetry<Args extends unknown[], R>(
     fn: (...args: Args) => Promise<R>,
   ): (...args: Args) => Promise<R> {
-    return (...args: Args): Promise<R> => withRetry(fn.bind(this), args)
+    // 6 retries so a 429 burst self-corrects here before task-level retry.
+    return (...args: Args): Promise<R> => withRetry(fn.bind(this), args, { retries: 6 })
   }
 
   // Methods wrapped with retry
