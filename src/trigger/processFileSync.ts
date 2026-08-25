@@ -121,40 +121,52 @@ export const initiateDropboxToAssemblySync = task({
     // accumulate all pages, then fan out once
     const allEntries: Awaited<ReturnType<typeof mapFilesService.checkAndFilterDbxFiles>> = []
 
-    // 2. loop over the dropbox files
-    while (dbxFiles.result.entries.length) {
-      // refresh access token for every batch
-      await dbx.dbxAuthClient.refreshAccessToken(connectionToken.refreshToken)
+    // 2. loop over the dropbox files. Capture a mid-pagination failure so files
+    //    already discovered are still dispatched below instead of being lost.
+    let listingError: unknown = null
+    try {
+      while (dbxFiles.result.entries.length) {
+        // refresh access token for every batch
+        await dbx.dbxAuthClient.refreshAccessToken(connectionToken.refreshToken)
 
-      const parsedDbxFiles = DropboxFileListFolderResultEntriesSchema.safeParse(
-        dbxFiles.result.entries,
-      )
+        const parsedDbxFiles = DropboxFileListFolderResultEntriesSchema.safeParse(
+          dbxFiles.result.entries,
+        )
 
-      if (!parsedDbxFiles.success) {
-        logger.error('Error parsing Dropbox files', { error: parsedDbxFiles.error })
-        break
+        if (!parsedDbxFiles.success) {
+          logger.error('Error parsing Dropbox files', { error: parsedDbxFiles.error })
+          break
+        }
+        const parsedDbxEntries = parsedDbxFiles.data
+
+        // check and filter out all the mapped files
+        const filteredEntries = await mapFilesService.checkAndFilterDbxFiles(
+          parsedDbxEntries,
+          dbxRootPath,
+          assemblyChannelId,
+        )
+
+        if (filteredEntries.length) allEntries.push(...filteredEntries)
+
+        if (!dbxFiles.result.has_more) break
+
+        // continue pagination
+        dbxFiles = await dbxClient.filesListFolderContinue({
+          cursor: dbxFiles.result.cursor,
+        })
       }
-      const parsedDbxEntries = parsedDbxFiles.data
-
-      // check and filter out all the mapped files
-      const filteredEntries = await mapFilesService.checkAndFilterDbxFiles(
-        parsedDbxEntries,
-        dbxRootPath,
-        assemblyChannelId,
-      )
-
-      if (filteredEntries.length) allEntries.push(...filteredEntries)
-
-      if (!dbxFiles.result.has_more) break
-
-      // continue pagination
-      dbxFiles = await dbxClient.filesListFolderContinue({
-        cursor: dbxFiles.result.cursor,
-      })
+    } catch (error) {
+      listingError = error
     }
 
-    // 3. fan out all files, keyed per portal
+    // 3. fan out all files, keyed per portal. Always dispatch what we discovered,
+    //    even if a later page failed, so earlier pages aren't lost.
     await fanOutAndWait(syncDropboxFileToAssembly, allEntries, user.portalId)
+
+    // Don't mark synced or advance the cursor on an incomplete listing: advancing
+    // would skip the unlisted pages from the webhook delta baseline. Safe to bail —
+    // a later run re-lists from root and mapping-based filtering dedupes what synced.
+    if (listingError) throw listingError
 
     // mark synced only after the fan-out, so progress can't report 100% early
     await mapFilesService.updateChannelMap(
@@ -278,28 +290,38 @@ export const initiateAssemblyToDropboxSync = task({
     // accumulate all pages, then fan out once
     const allEntries: Awaited<ReturnType<typeof mapFilesService.checkAndFilterAssemblyFiles>> = []
 
-    while (files.data.length) {
-      // refresh dropbox access token for every batch
-      await dbxAuth.refreshAccessToken(connectionToken.refreshToken)
+    // Capture a mid-pagination failure so files already discovered are still
+    // dispatched below instead of being lost.
+    let listingError: unknown = null
+    try {
+      while (files.data.length) {
+        // refresh dropbox access token for every batch
+        await dbxAuth.refreshAccessToken(connectionToken.refreshToken)
 
-      // 2. check and filter out all the mapped files
-      const filteredEntries = await mapFilesService.checkAndFilterAssemblyFiles(
-        files.data,
-        dbxRootPath,
-        assemblyChannelId,
-      )
+        // 2. check and filter out all the mapped files
+        const filteredEntries = await mapFilesService.checkAndFilterAssemblyFiles(
+          files.data,
+          dbxRootPath,
+          assemblyChannelId,
+        )
 
-      if (filteredEntries.length) allEntries.push(...filteredEntries)
+        if (filteredEntries.length) allEntries.push(...filteredEntries)
 
-      if (!files.nextToken) {
-        break
+        if (!files.nextToken) {
+          break
+        }
+
+        files = await copilotApi.listFiles(payload.assemblyChannelId, files.nextToken)
       }
-
-      files = await copilotApi.listFiles(payload.assemblyChannelId, files.nextToken)
+    } catch (error) {
+      listingError = error
     }
 
-    // fan out all files, keyed per portal
+    // fan out all files, keyed per portal. Always dispatch what we discovered,
+    // even if a later page failed, so earlier pages aren't lost.
     await fanOutAndWait(syncAssemblyFileToDropbox, allEntries, user.portalId)
+
+    if (listingError) throw listingError
   },
 })
 

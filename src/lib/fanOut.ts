@@ -6,20 +6,22 @@ export const chunk = <T>(items: T[], size: number): T[][] =>
     items.slice(i * size, i * size + size),
   )
 
-type BatchItemWithKey<TItem> = TItem & { options?: { concurrencyKey?: string } }
+type BatchOptions = { concurrencyKey?: string; [key: string]: unknown }
+type BatchItem<TItem> = TItem & { options?: BatchOptions }
 type KeyedBatchTask<TItem> = {
-  batchTriggerAndWait: (items: BatchItemWithKey<TItem>[]) => Promise<unknown>
+  batchTriggerAndWait: (items: BatchItem<TItem>[]) => Promise<unknown>
 }
 
 // Keyed per portal for fairness. Trigger.dev forbids parallel waits, so batches
 // are awaited one at a time (items within a batch still run concurrently).
 export const fanOutAndWait = async <TItem extends object>(
   task: KeyedBatchTask<TItem>,
-  items: TItem[],
+  items: BatchItem<TItem>[],
   concurrencyKey: string,
 ): Promise<void> => {
   if (!items.length) return
-  const keyed = items.map((item) => ({ ...item, options: { concurrencyKey } }))
+  // Merge the key into any existing options instead of replacing them.
+  const keyed = items.map((item) => ({ ...item, options: { ...item.options, concurrencyKey } }))
   for (const batch of chunk(keyed, BATCH_CHUNK_SIZE)) {
     await task.batchTriggerAndWait(batch)
   }
