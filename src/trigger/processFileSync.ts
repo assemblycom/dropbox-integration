@@ -135,7 +135,9 @@ export const initiateDropboxToAssemblySync = task({
 
         if (!parsedDbxFiles.success) {
           logger.error('Error parsing Dropbox files', { error: parsedDbxFiles.error })
-          break
+          // Throw (not break) so an incomplete listing doesn't get marked synced
+          // or advance the cursor; the catch still fans out the valid earlier pages.
+          throw parsedDbxFiles.error
         }
         const parsedDbxEntries = parsedDbxFiles.data
 

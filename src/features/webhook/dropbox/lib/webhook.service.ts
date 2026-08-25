@@ -231,7 +231,7 @@ export class DropboxWebhook {
     }
 
     if (allChanges.length > 0) {
-      await handleChannelFileChanges.triggerAndWait({
+      const result = await handleChannelFileChanges.triggerAndWait({
         files: allChanges,
         channelSyncId,
         dbxRootPath,
@@ -239,6 +239,14 @@ export class DropboxWebhook {
         user,
         connectionToken,
       })
+      // Don't advance the cursor if change processing failed, or these deltas move
+      // past the cursor and are never re-fetched. Throwing lets the run retry from
+      // the same cursor.
+      if (!result.ok) {
+        throw new Error(`handleChannelFileChanges failed for channel ${channelSyncId}`, {
+          cause: result.error,
+        })
+      }
     }
 
     await mapFilesService.updateChannelMapById(
