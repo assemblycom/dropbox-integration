@@ -19,8 +19,9 @@ export const withRetry = async <Args extends unknown[], R>(
   fn: (...args: Args) => Promise<R>,
   args: Args,
   opts?: {
-    minTimeout: number
-    maxTimeout: number
+    minTimeout?: number
+    maxTimeout?: number
+    retries?: number
   },
 ): Promise<R> => {
   let isEventProcessorRegistered = false
@@ -64,17 +65,26 @@ export const withRetry = async <Args extends unknown[], R>(
     },
 
     {
-      retries: 3,
+      retries: opts?.retries ?? 3,
       minTimeout: opts?.minTimeout ?? 500,
       maxTimeout: opts?.maxTimeout ?? 2000,
       factor: 2, // Exponential factor for timeout delay. Tweak this if issues still persist
 
-      onFailedAttempt: (error: { error: unknown; attemptNumber: number; retriesLeft: number }) => {
-        if (error.error instanceof DropboxResponseError) {
-          if (!RETRYABLE_STATUS_CODES.has(error.error.status)) return
-        } else if (!RETRYABLE_STATUS_CODES.has((error.error as StatusableError).status)) {
-          return
+      onFailedAttempt: async (error: {
+        error: unknown
+        attemptNumber: number
+        retriesLeft: number
+      }) => {
+        const err = error.error
+        const isDropbox = err instanceof DropboxResponseError
+        const status = isDropbox ? err.status : (err as StatusableError).status
+        if (!RETRYABLE_STATUS_CODES.has(status)) return
+
+        // Copilot has no retry-after header; wait ~1s (its recovery) before an actual retry.
+        if (!isDropbox && status === httpStatus.TOO_MANY_REQUESTS && error.retriesLeft > 0) {
+          await sleep(1000)
         }
+
         console.warn(
           `CopilotAPI#withRetry | Attempt ${error.attemptNumber} failed. There are ${error.retriesLeft} retries left. Error:`,
           error,
