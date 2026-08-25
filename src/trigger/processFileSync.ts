@@ -22,6 +22,7 @@ import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import type User from '@/lib/copilot/models/User.model'
 import { DropboxAuthClient } from '@/lib/dropbox/DropboxAuthClient'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
+import { fanOutAndWait } from '@/lib/fanOut'
 import { classifyDbxChanges } from '@/utils/classify-dbx-changes'
 import { withErrorLogging } from '@/utils/withErrorLogger'
 
@@ -117,6 +118,9 @@ export const initiateDropboxToAssemblySync = task({
       include_non_downloadable_files: false,
     })
 
+    // accumulate all pages, then fan out once
+    const allEntries: Awaited<ReturnType<typeof mapFilesService.checkAndFilterDbxFiles>> = []
+
     // 2. loop over the dropbox files
     while (dbxFiles.result.entries.length) {
       // refresh access token for every batch
@@ -139,21 +143,9 @@ export const initiateDropboxToAssemblySync = task({
         assemblyChannelId,
       )
 
-      if (filteredEntries.length) {
-        await syncDropboxFileToAssembly.batchTriggerAndWait(filteredEntries)
-      }
+      if (filteredEntries.length) allEntries.push(...filteredEntries)
 
-      if (!dbxFiles.result.has_more) {
-        // update channelSync with lastest cursor
-        await mapFilesService.updateChannelMap(
-          {
-            dbxCursor: dbxFiles.result.cursor,
-          },
-          assemblyChannelId,
-          dbxRootPath,
-        )
-        break
-      }
+      if (!dbxFiles.result.has_more) break
 
       // continue pagination
       dbxFiles = await dbxClient.filesListFolderContinue({
@@ -161,6 +153,10 @@ export const initiateDropboxToAssemblySync = task({
       })
     }
 
+    // 3. fan out all files, keyed per portal
+    await fanOutAndWait(syncDropboxFileToAssembly, allEntries, user.portalId)
+
+    // mark synced only after the fan-out, so progress can't report 100% early
     await mapFilesService.updateChannelMap(
       {
         status: true,
@@ -279,6 +275,9 @@ export const initiateAssemblyToDropboxSync = task({
     const copilotApi = new CopilotAPI(payload.user.portalId)
     let files = await copilotApi.listFiles(payload.assemblyChannelId)
 
+    // accumulate all pages, then fan out once
+    const allEntries: Awaited<ReturnType<typeof mapFilesService.checkAndFilterAssemblyFiles>> = []
+
     while (files.data.length) {
       // refresh dropbox access token for every batch
       await dbxAuth.refreshAccessToken(connectionToken.refreshToken)
@@ -290,9 +289,7 @@ export const initiateAssemblyToDropboxSync = task({
         assemblyChannelId,
       )
 
-      if (filteredEntries.length) {
-        await syncAssemblyFileToDropbox.batchTriggerAndWait(filteredEntries)
-      }
+      if (filteredEntries.length) allEntries.push(...filteredEntries)
 
       if (!files.nextToken) {
         break
@@ -300,6 +297,9 @@ export const initiateAssemblyToDropboxSync = task({
 
       files = await copilotApi.listFiles(payload.assemblyChannelId, files.nextToken)
     }
+
+    // fan out all files, keyed per portal
+    await fanOutAndWait(syncAssemblyFileToDropbox, allEntries, user.portalId)
   },
 })
 
