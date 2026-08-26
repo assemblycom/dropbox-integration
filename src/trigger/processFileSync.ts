@@ -232,13 +232,15 @@ export const handleChannelFileChanges = task({
      * After partial unique index: First delete and then create the files. This ensures that constraints are not violated.
      * This section should handle file rename, folder rename cases
      */
+    // Keyed per channel so different channels run in parallel instead of the whole
+    // system going one-at-a-time; delete-before-create ordering is preserved by
+    // awaiting each step in turn.
     if (deleted.length)
-      await deleteDropboxFileInAssembly.batchTriggerAndWait(deleted.map(toPayload))
-    if (created.length) await syncDropboxFileToAssembly.batchTriggerAndWait(created.map(toPayload))
-
-    for (const entry of contentUpdated) {
-      await updateDropboxFileInAssembly.triggerAndWait({ opts, entry })
-    }
+      await fanOutAndWait(deleteDropboxFileInAssembly, deleted.map(toPayload), channelSyncId)
+    if (created.length)
+      await fanOutAndWait(syncDropboxFileToAssembly, created.map(toPayload), channelSyncId)
+    if (contentUpdated.length)
+      await fanOutAndWait(updateDropboxFileInAssembly, contentUpdated.map(toPayload), channelSyncId)
   },
 })
 
@@ -265,8 +267,12 @@ export const updateDropboxFileInAssembly = task({
   },
   retry: RETRY_CONFIG,
   run: async (payload: DropboxToAssemblySyncFilesPayload) => {
-    await deleteDropboxFileInAssembly.triggerAndWait(payload)
-    await syncDropboxFileToAssembly.trigger(payload)
+    const { channelSyncId } = payload.opts
+    // Await the recreate (not fire-and-forget) so the mapping row is committed before
+    // this update reports done — otherwise a follow-up webhook for the same file can
+    // read stale state and dispatch a second concurrent sync of the same id.
+    await deleteDropboxFileInAssembly.triggerAndWait(payload, { concurrencyKey: channelSyncId })
+    await syncDropboxFileToAssembly.triggerAndWait(payload, { concurrencyKey: channelSyncId })
   },
 })
 
