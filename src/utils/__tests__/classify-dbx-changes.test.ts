@@ -133,4 +133,54 @@ describe('classifyDbxChanges', () => {
     expect(ids(result.created)).toEqual(['add'])
     expect(ids(result.contentUpdated)).toEqual(['upd'])
   })
+
+  it('dedupes duplicate ids within a bucket, keeping the last occurrence', () => {
+    const entries = [
+      makeEntry({ id: 'dup', content_hash: 'new-1' }),
+      makeEntry({ id: 'dup', content_hash: 'new-2' }),
+    ]
+    const rows = [makeRow('dup', 'old')]
+
+    const result = classifyDbxChanges(entries, rows)
+
+    expect(ids(result.contentUpdated)).toEqual(['dup'])
+    expect(result.contentUpdated[0].content_hash).toBe('new-2')
+  })
+
+  it('keeps a rename pair intact (same id in delete and create buckets)', () => {
+    const entries = [
+      makeEntry({ id: 'x', '.tag': 'deleted' }),
+      makeEntry({ id: 'x', '.tag': 'file', path_display: '/folder/renamed.txt' }),
+    ]
+    const rows = [makeRow('x')]
+
+    const result = classifyDbxChanges(entries, rows)
+
+    expect(ids(result.deleted)).toEqual(['x'])
+    expect(ids(result.created)).toEqual(['x'])
+  })
+
+  it('dedupes duplicate ids within the created bucket', () => {
+    const entries = [
+      makeEntry({ id: 'new', path_display: '/folder/a.txt' }),
+      makeEntry({ id: 'new', path_display: '/folder/b.txt' }),
+    ]
+
+    const result = classifyDbxChanges(entries, [])
+
+    expect(ids(result.created)).toEqual(['new'])
+    expect(result.created[0].path_display).toBe('/folder/b.txt')
+  })
+
+  it('dedupes duplicate ids within the deleted bucket', () => {
+    const entries = [
+      makeEntry({ id: 'gone', '.tag': 'deleted' }),
+      makeEntry({ id: 'gone', '.tag': 'deleted' }),
+    ]
+    const rows = [makeRow('gone')]
+
+    const result = classifyDbxChanges(entries, rows)
+
+    expect(ids(result.deleted)).toEqual(['gone'])
+  })
 })
