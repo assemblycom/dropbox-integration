@@ -10,6 +10,18 @@ export type DbxChangeClassification = {
   contentUpdated: DropboxFileListFolderSingleEntry[]
 }
 
+// Keep only the last entry per id, preserving order. Guards against a delta carrying
+// duplicate ids in one bucket, which would otherwise fan out concurrent same-file syncs
+// and double-create or trip the partial unique index. Applied per bucket so a rename's
+// delete+create pair (same id, different buckets) is left intact.
+const dedupeByIdKeepLast = (
+  entries: DropboxFileListFolderSingleEntry[],
+): DropboxFileListFolderSingleEntry[] => {
+  const byId = new Map<string, DropboxFileListFolderSingleEntry>()
+  for (const entry of entries) byId.set(entry.id, entry)
+  return [...byId.values()]
+}
+
 /**
  * Splits Dropbox delta entries into deletes, creates, and content updates by comparing
  * them against the already-mapped rows. The caller must process `deleted` before `created`
@@ -42,5 +54,9 @@ export const classifyDbxChanges = (
     return !!existing?.contentHash && existing.contentHash !== entry.content_hash
   })
 
-  return { deleted, created, contentUpdated }
+  return {
+    deleted: dedupeByIdKeepLast(deleted),
+    created: dedupeByIdKeepLast(created),
+    contentUpdated: dedupeByIdKeepLast(contentUpdated),
+  }
 }
