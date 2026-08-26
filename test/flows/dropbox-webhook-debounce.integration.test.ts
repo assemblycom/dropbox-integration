@@ -37,12 +37,14 @@ describe('webhook debounce', () => {
   })
 
   it('triggers a sync when the last sync is older than the window', async () => {
-    // No channels seeded: fetchDropBoxChanges clears pending + stamps timestamps with no external calls.
     await dropboxConnectionSeeder.create({
       accountId: ACCOUNT,
       pendingWebhook: false,
       lastWebhookSyncStartedAt: minutesAgo(6),
     })
+    // Isolate debounce timing from the pre-check (covered in dropbox-webhook-precheck):
+    // assume the account has changes so the trigger path runs.
+    vi.spyOn(DropboxWebhook.prototype, 'accountHasPendingChanges').mockResolvedValue(true)
 
     await new DropboxWebhook().handleDropboxEvents([ACCOUNT])
 
