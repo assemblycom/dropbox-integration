@@ -51,9 +51,70 @@ export class DropboxWebhook {
           .where(eq(dropboxConnections.id, connection.id))
         console.info(`Webhook debounced for account ${account}, marked as pending`)
       } else {
-        await processDropboxChanges.trigger(account, { concurrencyKey: account })
+        await this.triggerIfPendingChanges(account)
       }
     }
+  }
+
+  // Only start the sync job when the account actually has changes to sync. Fail open:
+  // any error triggers the job so a real change is never dropped.
+  private async triggerIfPendingChanges(account: string) {
+    const shouldTrigger = await this.accountHasPendingChanges(account).catch((error) => {
+      logger.warn(
+        `DropboxWebhook#triggerIfPendingChanges :: pre-check failed for ${account}, triggering anyway`,
+        error,
+      )
+      return true // fail open — never drop a possibly-real change
+    })
+    if (shouldTrigger) {
+      await processDropboxChanges.trigger(account, { concurrencyKey: account })
+    } else {
+      console.info(`Webhook skipped for account ${account}, no relevant changes to sync`)
+    }
+  }
+
+  // Read-only peek of each channel's delta to decide if the sync job is worth starting.
+  // Does not persist the advanced cursor — the job re-fetches from the stored one.
+  async accountHasPendingChanges(account: string): Promise<boolean> {
+    const connection = await this.getActiveConnection(account)
+    if (!connection?.refreshToken) return true // can't peek → let the job run
+
+    const channels = await db.query.channelSync.findMany({
+      where: (t, { eq, and }) => and(eq(t.dbxAccountId, account), eq(t.status, true)),
+      columns: { dbxRootPath: true, dbxCursor: true },
+    })
+    if (!channels.length) return false // nothing mapped for this account
+
+    const dbxClient = new DropboxClient(
+      connection.refreshToken,
+      connection.rootNamespaceId,
+    ).getDropboxClient()
+
+    for (const channel of channels) {
+      if (!channel.dbxCursor) return true // no baseline to peek → let the job run
+      const root = channel.dbxRootPath.toLowerCase()
+      if (await this.deltaHasRelevantEntry(dbxClient, channel.dbxCursor, root)) return true
+    }
+
+    return false
+  }
+
+  // Peek delta pages from `cursor` (read-only — the cursor is never persisted), short-
+  // circuiting as soon as an entry under `root` appears. A missing path_display can't be
+  // placed, so it's treated as relevant (fail open).
+  private async deltaHasRelevantEntry(
+    dbxClient: Dropbox,
+    cursor: string,
+    root: string,
+  ): Promise<boolean> {
+    const { result } = await dbxClient.filesListFolderContinue({ cursor })
+    const relevant = result.entries.some((entry) => {
+      const path = entry.path_display?.toLowerCase()
+      return !path || path === root || path.startsWith(`${root}/`)
+    })
+    if (relevant) return true
+    if (!result.has_more) return false
+    return this.deltaHasRelevantEntry(dbxClient, result.cursor, root)
   }
 
   async fetchDropBoxChanges(accountId: string) {
