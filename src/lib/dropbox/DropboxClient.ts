@@ -7,6 +7,7 @@ import { MAX_FETCH_DBX_RESOURCES } from '@/constants/limits'
 import { DropboxClientType, type DropboxClientTypeValue } from '@/db/constants'
 import { DropboxAuthClient } from '@/lib/dropbox/DropboxAuthClient'
 import { type DropboxFileMetadata, DropboxFileMetadataSchema } from '@/lib/dropbox/type'
+import logger from '@/lib/logger'
 
 import { withRetry } from '@/lib/withRetry'
 import { dropboxArgHeader } from '@/utils/header'
@@ -115,7 +116,7 @@ export class DropboxClient {
     fetchAll: boolean = false,
     limit: number = MAX_FETCH_DBX_RESOURCES,
   ) {
-    console.info(
+    logger.info(
       'DropboxClient#getAllFilesFolders :: Fetching all files and folders. Root path: ',
       rootPath,
     )
@@ -138,7 +139,7 @@ export class DropboxClient {
       })
       entries.push(...filesFolders.result.entries)
     }
-    console.info('DropboxClient#getAllFilesFolders :: Total entries', entries.length)
+    logger.info('DropboxClient#getAllFilesFolders :: Total entries', entries.length)
 
     return entries
   }

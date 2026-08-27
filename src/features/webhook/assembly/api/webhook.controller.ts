@@ -24,7 +24,7 @@ export const handleWebhookEvent = async (req: NextRequest) => {
   const connection = await dropboxConnectionService.getConnectionForWorkspace()
 
   if (!connection.status) {
-    console.info(`Sync is not enabled for this workspace. Skipping webhook event`)
+    logger.info(`Sync is not enabled for this workspace. Skipping webhook event`)
     return NextResponse.json({})
   }
 
