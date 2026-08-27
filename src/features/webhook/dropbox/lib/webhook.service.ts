@@ -77,7 +77,7 @@ export class DropboxWebhook {
   // Does not persist the advanced cursor — the job re-fetches from the stored one.
   async accountHasPendingChanges(account: string): Promise<boolean> {
     const connection = await this.getActiveConnection(account)
-    if (!connection?.refreshToken) return true // can't peek → let the job run
+    if (!connection?.refreshToken) return false // no token → the job can't sync anyway, skip it
 
     const channels = await db.query.channelSync.findMany({
       where: (t, { eq, and }) => and(eq(t.dbxAccountId, account), eq(t.status, true)),

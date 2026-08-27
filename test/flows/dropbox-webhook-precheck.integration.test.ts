@@ -57,6 +57,16 @@ describe('DropboxWebhook#accountHasPendingChanges', () => {
     expect(await new DropboxWebhook().accountHasPendingChanges('acc')).toBe(false)
   })
 
+  it('returns false when the connection has no refresh token (job cannot sync)', async () => {
+    await dropboxConnectionSeeder.create({
+      accountId: 'acc',
+      rootNamespaceId: 'ns',
+      refreshToken: null,
+    })
+
+    expect(await new DropboxWebhook().accountHasPendingChanges('acc')).toBe(false)
+  })
+
   it('throws on a Dropbox error so the caller can fail open and trigger', async () => {
     const connection = await seedAccount()
     await channelSeeder.create({
