@@ -3,6 +3,7 @@ import status from 'http-status'
 import { type NextRequest, NextResponse } from 'next/server'
 import env from '@/config/server.env'
 import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
+import logger from '@/lib/logger'
 import { sleep } from '@/utils/sleep'
 
 export const handleWebhookUrlVerification = (req: NextRequest) => {
@@ -16,7 +17,7 @@ export const handleWebhookUrlVerification = (req: NextRequest) => {
       },
     })
   } catch (error: unknown) {
-    console.error('Webhook verification error:', error)
+    logger.error('Webhook verification error:', error)
     return NextResponse.json(
       { error: 'Something went wrong' },
       { status: status.INTERNAL_SERVER_ERROR },

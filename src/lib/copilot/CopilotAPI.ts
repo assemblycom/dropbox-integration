@@ -113,7 +113,7 @@ export class CopilotAPI {
     fileType: ObjectTypeValue,
   ): Promise<CreateFileType> {
     // Names are validated upstream (SyncService); path passes through unchanged.
-    console.info(`CopilotAPI#_createFile. Path: ${path}`)
+    logger.info(`CopilotAPI#_createFile. Path: ${path}`)
     const sdk = await this.assemblySdk
     const createFileResponse = await sdk.createFile({
       fileType,
