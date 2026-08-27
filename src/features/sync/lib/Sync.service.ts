@@ -795,11 +795,7 @@ export class SyncService extends AuthenticatedDropboxService {
         eq(fileFolderSync.itemPath, basePath),
       ) as WhereClause
       try {
-        logger.info(
-          'SyncService#handleFolderCreatedCase :: Updating dbxFileId',
-          entryId,
-          fileMapCondition.getSQL(),
-        )
+        logger.info('SyncService#handleFolderCreatedCase :: Updating dbxFileId', entryId)
       } catch (e) {
         logger.info(e)
       }
