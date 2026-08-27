@@ -52,7 +52,7 @@ type MarkUpdatedPayload = Omit<
 
 export class MapFilesService extends AuthenticatedDropboxService {
   async getSingleFileMap(where: WhereClause): Promise<FileSyncSelectType | undefined> {
-    logger.info('MapFilesService#getSingleFileMap :: Getting single file map where', where.getSQL())
+    logger.info('MapFilesService#getSingleFileMap :: Getting single file map')
 
     const results = await db.query.fileFolderSync.findFirst({
       where,
@@ -62,7 +62,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
   }
 
   async getAllFileMaps(where: WhereClause): Promise<FileSyncSelectType[]> {
-    logger.info('MapFilesService#getAllFileMaps :: Getting all file maps where', where.getSQL())
+    logger.info('MapFilesService#getAllFileMaps :: Getting all file maps')
 
     const results = await db.query.fileFolderSync.findMany({
       where: (fileFolderSync, { eq }) =>
@@ -178,7 +178,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
     payload: FileSyncUpdatePayload,
     condition: WhereClause,
   ): Promise<FileSyncSelectType> {
-    logger.info('MapFilesService#updateFileMap :: Updating file map', payload, condition.getSQL())
+    logger.info('MapFilesService#updateFileMap :: Updating file map', payload)
 
     const [connection] = await db
       .update(fileFolderSync)
@@ -528,7 +528,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
   }
 
   async getAllChannelMaps(where?: WhereClause): Promise<ChannelSyncSelectType[]> {
-    logger.info('MapFilesService#getAllChannelMaps :: Getting all channel maps', where?.getSQL())
+    logger.info('MapFilesService#getAllChannelMaps :: Getting all channel maps')
 
     const results = await db.query.channelSync.findMany({
       where: (channelSync, { eq }) =>
