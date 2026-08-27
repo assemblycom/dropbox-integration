@@ -18,10 +18,10 @@ class AuthService extends BaseService {
       tokenSet = await dbx.handleDropboxCallback(urlParams)
 
       // Need to get the user's account info to get the Team Root Namespace ID. This step makes sure we are accessing the root folder that includes both personal and team folder
-      console.info('AuthService#handleDropboxCallback :: Getting account info')
+      logger.info('AuthService#handleDropboxCallback :: Getting account info')
       const dbxClient = new DropboxClient(tokenSet.refreshToken).getDropboxClient()
       const accountInfo = await dbxClient.usersGetCurrentAccount()
-      console.info('AuthService#handleDropboxCallback :: Account info', accountInfo)
+      logger.info('AuthService#handleDropboxCallback :: Account info', accountInfo)
 
       // The root_namespace_id is strictly available on root_info
       rootNamespaceId = accountInfo.result.root_info?.root_namespace_id

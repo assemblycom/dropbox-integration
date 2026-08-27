@@ -72,9 +72,7 @@ export const processDropboxChanges = task({
   },
   run: async (accountId: string) => {
     const dropboxWebhook = new DropboxWebhook()
-    console.info(
-      `processFileSync#processDropboxChanges, Process start for account ID: ${accountId}`,
-    )
+    logger.info(`processFileSync#processDropboxChanges, Process start for account ID: ${accountId}`)
     await dropboxWebhook.fetchDropBoxChanges(accountId)
   },
 })

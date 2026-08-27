@@ -684,7 +684,7 @@ export class MapFilesService extends AuthenticatedDropboxService {
 
     // Bulk soft-delete stale channel maps
     if (staleChannelMapIds.length > 0) {
-      console.info('Soft delete channel maps and make them inactive: ', staleChannelMapIds)
+      logger.info('Soft delete channel maps and make them inactive: ', staleChannelMapIds)
       await this.deleteChannelMapsByIds(staleChannelMapIds)
     }
 
@@ -719,23 +719,23 @@ export class MapFilesService extends AuthenticatedDropboxService {
 
     if (fileChannel.membershipType === FileChannelMembership.COMPANY) {
       if (!fileChannel.companyId) {
-        console.error('Company id not found')
+        logger.error('Company id not found')
         return null
       }
       const company = companyMap.get(fileChannel.companyId)
       if (!company) {
-        console.error('Company not found in batch response', fileChannel.companyId)
+        logger.error('Company not found in batch response', fileChannel.companyId)
         return null
       }
       fileChannelValue = [{ id: company.id, companyId: company.id, object: 'company' as const }]
     } else {
       if (!fileChannel.clientId) {
-        console.error('Client id not found')
+        logger.error('Client id not found')
         return null
       }
       const client = clientMap.get(fileChannel.clientId)
       if (!client) {
-        console.error('Client not found in batch response', fileChannel.clientId)
+        logger.error('Client not found in batch response', fileChannel.clientId)
         return null
       }
       fileChannelValue = [

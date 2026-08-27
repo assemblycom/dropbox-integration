@@ -34,7 +34,7 @@ export class DropboxWebhook {
 
       // Skip if already pending — cron will handle it
       if (connection.pendingWebhook) {
-        console.info(`Webhook skipped for account ${account}, already has pending webhook`)
+        logger.info(`Webhook skipped for account ${account}, already has pending webhook`)
         continue
       }
 
@@ -49,7 +49,7 @@ export class DropboxWebhook {
           .update(dropboxConnections)
           .set({ pendingWebhook: true })
           .where(eq(dropboxConnections.id, connection.id))
-        console.info(`Webhook debounced for account ${account}, marked as pending`)
+        logger.info(`Webhook debounced for account ${account}, marked as pending`)
       } else {
         await processDropboxChanges.trigger(account, { concurrencyKey: account })
       }
@@ -60,7 +60,7 @@ export class DropboxWebhook {
     const connection = await this.getActiveConnection(accountId)
 
     if (!connection || !connection.refreshToken) {
-      console.error(
+      logger.error(
         `DropboxWebhook#fetchDropboxChanges :: Connection is not valid for Dropbox accountId: ${accountId}`,
       )
       return
@@ -127,7 +127,7 @@ export class DropboxWebhook {
     dbxClient: Dropbox,
   ): Promise<boolean> {
     try {
-      console.info(
+      logger.info(
         `WebhookService#handleDbxRootPathMove. Root path: ${channel.dbxRootPath}. Assembly file channel ID: ${channel.assemblyChannelId} Checking if the root path exists...`,
       )
       const response = await this.getDropboxFileMetadata(channel.dbxRootPath, dbxClient)
@@ -139,7 +139,7 @@ export class DropboxWebhook {
         error,
       )
       if (error instanceof DropboxResponseError && error.status === 409) {
-        console.info(
+        logger.info(
           'WebhookService#handleDbxRootPathMove :: Root path not found',
           channel.dbxRootPath,
         )
@@ -197,7 +197,7 @@ export class DropboxWebhook {
     user: User,
     connectionToken: DropboxConnectionTokens,
   ) {
-    console.info(
+    logger.info(
       `webhookService#processChannelChanges. ChannelId: ${channel.id} ${JSON.stringify(channel)}`,
     )
     const { id: channelSyncId, dbxRootPath, assemblyChannelId, dbxCursor } = channel
