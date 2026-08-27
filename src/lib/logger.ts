@@ -25,11 +25,14 @@ const parseLevel = (value: string | undefined): LogLevel => {
 const minRank = (): number => LEVEL_RANK[parseLevel(process.env.LOG_LEVEL)]
 
 // Bound object output so one log line can't dump a whole payload / file list.
+// breakLength: Infinity keeps each log on one physical line so line-based log
+// collectors don't split a wrapped object across entries.
 const inspectOptions: util.InspectOptions = {
   depth: 2,
   colors: Boolean(process.stdout.isTTY),
   maxArrayLength: 10,
   maxStringLength: 512,
+  breakLength: Infinity,
 }
 
 function formatArg(arg: unknown): string {
