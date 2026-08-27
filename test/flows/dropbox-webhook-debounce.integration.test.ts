@@ -90,4 +90,59 @@ describe('webhook debounce', () => {
     expect(row.pendingWebhook).toBe(true) // unchanged
     expect(row.lastWebhookSyncedAt).toBeNull() // no sync triggered
   })
+
+  it('marks pending when processing fails, so the catch-up cron retries', async () => {
+    await dropboxConnectionSeeder.create({
+      accountId: ACCOUNT,
+      pendingWebhook: false,
+      lastWebhookSyncStartedAt: minutesAgo(6),
+    })
+    vi.spyOn(DropboxWebhook.prototype, 'accountHasPendingChanges').mockResolvedValue(true)
+    vi.spyOn(processDropboxChanges, 'trigger').mockRejectedValue(new Error('trigger down'))
+
+    await new DropboxWebhook().handleDropboxEvents([ACCOUNT])
+
+    const row = await readConnection()
+    expect(row.pendingWebhook).toBe(true) // marked so the cron re-runs it
+  })
+
+  it('marks only the failed connection pending when an account has two connections', async () => {
+    for (const portalId of ['portal-a', 'portal-b']) {
+      await dropboxConnectionSeeder.create({
+        accountId: 'acc-multi',
+        portalId,
+        pendingWebhook: false,
+        lastWebhookSyncStartedAt: minutesAgo(6),
+      })
+    }
+    vi.spyOn(DropboxWebhook.prototype, 'accountHasPendingChanges').mockResolvedValue(true)
+    vi.spyOn(processDropboxChanges, 'trigger').mockRejectedValue(new Error('boom'))
+
+    await new DropboxWebhook().handleDropboxEvents(['acc-multi'])
+
+    const rows = await db
+      .select()
+      .from(dropboxConnections)
+      .where(eq(dropboxConnections.accountId, 'acc-multi'))
+    expect(rows.filter((r) => r.pendingWebhook)).toHaveLength(1) // only the processed one, not both
+  })
+
+  it('keeps processing later accounts when an earlier one fails', async () => {
+    for (const accountId of ['acc-fail', 'acc-ok']) {
+      await dropboxConnectionSeeder.create({
+        accountId,
+        pendingWebhook: false,
+        lastWebhookSyncStartedAt: minutesAgo(6),
+      })
+    }
+    vi.spyOn(DropboxWebhook.prototype, 'accountHasPendingChanges').mockResolvedValue(true)
+    const triggerSpy = vi
+      .spyOn(processDropboxChanges, 'trigger')
+      .mockRejectedValueOnce(new Error('boom')) // acc-fail
+      .mockResolvedValue(undefined as never) // acc-ok
+
+    await new DropboxWebhook().handleDropboxEvents(['acc-fail', 'acc-ok'])
+
+    expect(triggerSpy).toHaveBeenCalledWith('acc-ok', { concurrencyKey: 'acc-ok' })
+  })
 })

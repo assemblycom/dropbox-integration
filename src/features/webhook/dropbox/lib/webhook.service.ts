@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/nextjs'
 import { and, eq } from 'drizzle-orm'
 import { type Dropbox, DropboxResponseError } from 'dropbox'
 import httpStatus from 'http-status'
@@ -25,35 +26,59 @@ const DEBOUNCE_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
 export class DropboxWebhook {
   async handleDropboxEvents(accounts: string[]) {
     for (const account of accounts) {
-      const connection = await db.query.dropboxConnections.findFirst({
-        where: (t, { eq, and }) => and(eq(t.accountId, account), eq(t.status, true)),
-        columns: { id: true, pendingWebhook: true, lastWebhookSyncStartedAt: true },
+      // Isolate per-account failures so one bad account doesn't block the rest. This only
+      // fires if the lookup itself threw (connection unknown, so nothing to flag) — log it;
+      // the next webhook re-processes the account since the cursor is untouched.
+      await this.processAccountWebhook(account).catch((error) => {
+        logger.error(`DropboxWebhook#handleDropboxEvents :: failed for ${account}`, error)
+        Sentry.captureException(error)
       })
+    }
+  }
 
-      if (!connection) continue
+  private async processAccountWebhook(account: string) {
+    const connection = await db.query.dropboxConnections.findFirst({
+      where: (t, { eq, and }) => and(eq(t.accountId, account), eq(t.status, true)),
+      columns: { id: true, pendingWebhook: true, lastWebhookSyncStartedAt: true },
+    })
 
-      // Skip if already pending — cron will handle it
-      if (connection.pendingWebhook) {
-        console.info(`Webhook skipped for account ${account}, already has pending webhook`)
-        continue
-      }
+    if (!connection) return
 
-      // Debounce: if the account was synced recently, defer to cron
-      const debounceThreshold = new Date(Date.now() - DEBOUNCE_WINDOW_MS)
-      const recentlySynced =
-        connection.lastWebhookSyncStartedAt &&
-        connection.lastWebhookSyncStartedAt >= debounceThreshold
+    // Skip if already pending — cron will handle it
+    if (connection.pendingWebhook) {
+      console.info(`Webhook skipped for account ${account}, already has pending webhook`)
+      return
+    }
 
+    // Debounce: if the account was synced recently, defer to cron
+    const debounceThreshold = new Date(Date.now() - DEBOUNCE_WINDOW_MS)
+    const recentlySynced =
+      connection.lastWebhookSyncStartedAt &&
+      connection.lastWebhookSyncStartedAt >= debounceThreshold
+
+    try {
       if (recentlySynced) {
-        await db
-          .update(dropboxConnections)
-          .set({ pendingWebhook: true })
-          .where(eq(dropboxConnections.id, connection.id))
+        await this.markConnectionPending(connection.id)
         console.info(`Webhook debounced for account ${account}, marked as pending`)
       } else {
         await this.triggerIfPendingChanges(account)
       }
+    } catch (error) {
+      // The 200 already went back to Dropbox, so mark this specific connection pending
+      // for the catch-up cron to retry.
+      logger.error(`DropboxWebhook#processAccountWebhook :: failed for ${account}`, error)
+      Sentry.captureException(error)
+      await this.markConnectionPending(connection.id).catch((markError) =>
+        Sentry.captureException(markError),
+      )
     }
+  }
+
+  private markConnectionPending(id: string) {
+    return db
+      .update(dropboxConnections)
+      .set({ pendingWebhook: true })
+      .where(eq(dropboxConnections.id, id))
   }
 
   // Only start the sync job when the account actually has changes to sync. Fail open:
