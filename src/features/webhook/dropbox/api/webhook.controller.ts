@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
+import * as Sentry from '@sentry/nextjs'
 import status from 'http-status'
-import { type NextRequest, NextResponse } from 'next/server'
+import { after, type NextRequest, NextResponse } from 'next/server'
 import env from '@/config/server.env'
 import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
 import { sleep } from '@/utils/sleep'
@@ -31,8 +32,6 @@ export const handleWebhookEvents = async (req: NextRequest) => {
 
   const body = await req.text()
 
-  await sleep(800) // prevent ping-pong case of webhooks
-
   const computedSignature = crypto
     .createHmac('sha256', env.DROPBOX_APP_SECRET)
     .update(body)
@@ -48,8 +47,17 @@ export const handleWebhookEvents = async (req: NextRequest) => {
   const { list_folder } = JSON.parse(body)
   const accounts = list_folder?.accounts ?? []
 
-  const dropboxWebhook = new DropboxWebhook()
-  await dropboxWebhook.handleDropboxEvents(accounts)
+  // Reply to Dropbox first, then process in the background so the check doesn't slow the reply.
+  after(async () => {
+    try {
+      await sleep(800) // let our own writes settle first
+      await new DropboxWebhook().handleDropboxEvents(accounts)
+    } catch (error) {
+      // Dropbox already got its 200, so it won't retry — report so this is visible.
+      console.error('Dropbox webhook :: background processing failed', { accounts }, error)
+      Sentry.captureException(error)
+    }
+  })
 
   // Dropbox expects a 200 OK with plain text body
   return new NextResponse('', {
