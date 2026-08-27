@@ -116,7 +116,7 @@ export class DropboxClient {
     fetchAll: boolean = false,
     limit: number = MAX_FETCH_DBX_RESOURCES,
   ) {
-    logger.info(
+    logger.log(
       'DropboxClient#getAllFilesFolders :: Fetching all files and folders. Root path: ',
       rootPath,
     )

@@ -897,7 +897,7 @@ export class SyncService extends AuthenticatedDropboxService {
     fileType: ObjectTypeValue,
     file: CopilotFileRetrieve,
   ): Promise<{ dbxFileId: string; contentHash?: string } | undefined> {
-    logger.info(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
+    logger.log(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
 
     const dbxClient = this.dbxClient.getDropboxClient()
     const dbxFilePath = `${dbxRootPath}/${file.path}`

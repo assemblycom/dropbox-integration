@@ -37,7 +37,7 @@ export const handleWebhookEvent = async (req: NextRequest) => {
     rootNamespaceId: connection.rootNamespaceId,
   })
   const webhookEvent = assemblyWebhookService.parseWebhook(rawBody)
-  logger.info(`Event triggered. ${JSON.stringify(webhookEvent)}`)
+  logger.info('Event triggered.', webhookEvent)
 
   const eventType = assemblyWebhookService.validateHandleableEvent(webhookEvent)
   if (!eventType) {
