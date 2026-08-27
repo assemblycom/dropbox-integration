@@ -54,7 +54,7 @@ export class DropboxService extends AuthenticatedDropboxService {
     path: string,
     dbxClient: Dropbox,
   ) {
-    logger.info('DropboxService#searchChildrenFolders :: Searching children folders')
+    logger.log('DropboxService#searchChildrenFolders :: Searching children folders')
     const isSharedFolder = !!folderResult.sharing_info?.shared_folder_id
     const prefixPath = isSharedFolder ? path : undefined
 
@@ -81,12 +81,12 @@ export class DropboxService extends AuthenticatedDropboxService {
    * To get the subfolder of the result folder, we use filesListFolder with the namespace_id of the result folder.
    */
   async _searchForFolder({ dbxClient, search }: { dbxClient: Dropbox; search: string }) {
-    logger.info('DropboxService#getFolderTree :: Searching folder in Dropbox... Query: ', search)
+    logger.log('DropboxService#getFolderTree :: Searching folder in Dropbox... Query: ', search)
     const sanitizedSearch = replaceSpecialCharactersWithSpace(search)
     if (!sanitizedSearch) return []
 
     const { path, folder: query } = splitPathAndFolder(sanitizedSearch)
-    logger.info({ path, query })
+    logger.log({ path, query })
 
     let tempPath = path
     let folderResult: files.FolderMetadataReference | undefined
@@ -94,7 +94,7 @@ export class DropboxService extends AuthenticatedDropboxService {
     const formattedFolders: Partial<Folder>[] = []
 
     if (query !== '') {
-      logger.info('DropboxService#searchForFolder :: Query is available. Searching for folder')
+      logger.log('DropboxService#searchForFolder :: Query is available. Searching for folder')
       const searchResponse = await dbxClient.filesSearchV2({
         query,
         options: {
@@ -117,7 +117,7 @@ export class DropboxService extends AuthenticatedDropboxService {
       const metadata = matchMetadata.metadata
       folderResult = metadata['.tag'] === ObjectType.FOLDER ? metadata : undefined
     } else {
-      logger.info('DropboxService#searchForFolder :: Query is empty. Getting folder metadata')
+      logger.log('DropboxService#searchForFolder :: Query is empty. Getting folder metadata')
 
       const metaDataResp = await dbxClient.filesGetMetadata({ path: tempPath })
       if (metaDataResp.status !== httpStatus.OK) {
