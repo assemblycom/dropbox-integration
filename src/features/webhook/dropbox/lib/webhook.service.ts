@@ -197,9 +197,7 @@ export class DropboxWebhook {
     user: User,
     connectionToken: DropboxConnectionTokens,
   ) {
-    logger.info(
-      `webhookService#processChannelChanges. ChannelId: ${channel.id} ${JSON.stringify(channel)}`,
-    )
+    logger.log(`WebhookService#processChannelChanges. ChannelId: ${channel.id}`)
     const { id: channelSyncId, dbxRootPath, assemblyChannelId, dbxCursor } = channel
     let hasMore = true
     let currentCursor = dbxCursor ?? ''
