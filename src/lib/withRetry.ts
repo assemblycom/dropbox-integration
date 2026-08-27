@@ -5,6 +5,7 @@ import { DropboxResponseError } from 'dropbox'
 import httpStatus from 'http-status'
 import pRetry from 'p-retry'
 import type { StatusableError } from '@/errors/BaseServerError'
+import logger from '@/lib/logger'
 import { sleep } from '@/utils/sleep'
 
 const RETRYABLE_STATUS_CODES = new Set<number>([
@@ -39,7 +40,7 @@ export const withRetry = async <Args extends unknown[], R>(
           if (error.status === httpStatus.TOO_MANY_REQUESTS && retryAfter) {
             // If rate limit happens with retryAfter value from dropbox api. Wait
             const waitMs = retryAfter * 1000
-            console.warn(`Rate limited. Waiting for ${retryAfter} seconds before retry...`)
+            logger.warn(`Rate limited. Waiting for ${retryAfter} seconds before retry...`)
             await sleep(waitMs)
           }
         }
@@ -85,7 +86,7 @@ export const withRetry = async <Args extends unknown[], R>(
           await sleep(1000)
         }
 
-        console.warn(
+        logger.warn(
           `CopilotAPI#withRetry | Attempt ${error.attemptNumber} failed. There are ${error.retriesLeft} retries left. Error:`,
           error,
         )

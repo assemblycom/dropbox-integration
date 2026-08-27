@@ -515,7 +515,7 @@ export class SyncService extends AuthenticatedDropboxService {
         error.status === 400 &&
         error.body.message === 'Folder already exists'
       ) {
-        console.info({ message: error.body.message, path: itemPath })
+        logger.info({ message: error.body.message, path: itemPath })
         // Row exists (concurrent winner) → just stamp dbxFileId. Otherwise recover the
         // folder's id + path from Assembly so children resolve under it, not a duplicate.
         const existing = await this.mapFilesService.getDbxMappedFileFromPath(
@@ -543,7 +543,7 @@ export class SyncService extends AuthenticatedDropboxService {
         }
         return
       }
-      console.error(
+      logger.error(
         `SyncService#createFolderInAssembly. Upload failed. Channel ID: ${assemblyChannelId}. Path: ${itemPath}`,
       )
       throw error
@@ -773,7 +773,7 @@ export class SyncService extends AuthenticatedDropboxService {
     logger.info('SyncService#uploadFileInAssembly :: File uploaded to Assembly', dbxPath)
 
     if (fileUploadResp.status !== httpStatus.OK) {
-      console.error({ error: await fileUploadResp.json() })
+      logger.error({ error: await fileUploadResp.json() })
       throw new Error('SyncService#uploadFileInAssemnly. Failed to upload file to assembly')
     }
   }
@@ -897,7 +897,7 @@ export class SyncService extends AuthenticatedDropboxService {
     fileType: ObjectTypeValue,
     file: CopilotFileRetrieve,
   ): Promise<{ dbxFileId: string; contentHash?: string } | undefined> {
-    console.info(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
+    logger.info(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
 
     const dbxClient = this.dbxClient.getDropboxClient()
     const dbxFilePath = `${dbxRootPath}/${file.path}`
@@ -927,7 +927,7 @@ export class SyncService extends AuthenticatedDropboxService {
         error.status === 409 &&
         dbxError?.error?.path?.['.tag'] === 'not_found'
       if (!isNotFound) {
-        console.error(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
+        logger.error(`SyncService#createAndUploadFileInDropbox. Channel ID: ${file.channelId}`)
         throw error
       }
     }
@@ -956,7 +956,7 @@ export class SyncService extends AuthenticatedDropboxService {
     }
 
     if (existing) {
-      console.info(
+      logger.info(
         `SyncService#createAndUploadFileInDropbox. File exists but didn't received required file tag. Type: ${existing['.tag']}. Channel ID: ${file.channelId}`,
       )
       return
@@ -975,7 +975,7 @@ export class SyncService extends AuthenticatedDropboxService {
       logger.info('SyncService#createAndUploadFileInDropbox :: File created', dbxFilePath)
       return await this.uploadFileInDropbox(file, dbxFilePath)
     }
-    console.info(
+    logger.info(
       `SyncService#createAndUploadFileInDropbox. File type out of bound. Type: ${fileType}. Channel ID: ${file.channelId}`,
     )
   }
@@ -999,7 +999,7 @@ export class SyncService extends AuthenticatedDropboxService {
         contentHash: dbxResponse.contentHash,
       }
     }
-    console.error(
+    logger.error(
       `SyncService#uploadFileInDropbox. Assembly file with Id: ${file.id} has no download url. Channel ID: ${file.channelId}`,
     )
     throw new Error('File not found')

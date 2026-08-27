@@ -1,6 +1,7 @@
 import type { Dropbox } from 'dropbox'
 import type { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import { DropboxFileListFolderResultEntriesSchema } from '@/features/sync/types'
+import logger from '@/lib/logger'
 
 export async function getDropboxChanges(
   cursor: string,
@@ -34,8 +35,8 @@ export async function getDropboxChanges(
     const parsed = DropboxFileListFolderResultEntriesSchema.safeParse(entriesWithId)
 
     if (!parsed.success) {
-      console.info(`Entries payload: ${JSON.stringify(entriesWithId)}`)
-      console.error('Invalid Dropbox response entries:', parsed.error)
+      logger.info(`Entries payload: ${JSON.stringify(entriesWithId)}`)
+      logger.error('Invalid Dropbox response entries:', parsed.error)
       // return
       throw new Error('Invalid Dropbox entries format')
     }
@@ -50,7 +51,7 @@ export async function getDropboxChanges(
       hasMore: response.result.has_more,
     }
   } catch (error) {
-    console.error('Error fetching Dropbox changes:', error)
+    logger.error('Error fetching Dropbox changes:', error)
     throw error
   }
 }

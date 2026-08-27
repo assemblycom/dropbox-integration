@@ -54,7 +54,7 @@ export class DropboxService extends AuthenticatedDropboxService {
     path: string,
     dbxClient: Dropbox,
   ) {
-    console.info('DropboxService#searchChildrenFolders :: Searching children folders')
+    logger.info('DropboxService#searchChildrenFolders :: Searching children folders')
     const isSharedFolder = !!folderResult.sharing_info?.shared_folder_id
     const prefixPath = isSharedFolder ? path : undefined
 
@@ -86,7 +86,7 @@ export class DropboxService extends AuthenticatedDropboxService {
     if (!sanitizedSearch) return []
 
     const { path, folder: query } = splitPathAndFolder(sanitizedSearch)
-    console.info({ path, query })
+    logger.info({ path, query })
 
     let tempPath = path
     let folderResult: files.FolderMetadataReference | undefined
@@ -94,7 +94,7 @@ export class DropboxService extends AuthenticatedDropboxService {
     const formattedFolders: Partial<Folder>[] = []
 
     if (query !== '') {
-      console.info('DropboxService#searchForFolder :: Query is available. Searching for folder')
+      logger.info('DropboxService#searchForFolder :: Query is available. Searching for folder')
       const searchResponse = await dbxClient.filesSearchV2({
         query,
         options: {
@@ -117,7 +117,7 @@ export class DropboxService extends AuthenticatedDropboxService {
       const metadata = matchMetadata.metadata
       folderResult = metadata['.tag'] === ObjectType.FOLDER ? metadata : undefined
     } else {
-      console.info('DropboxService#searchForFolder :: Query is empty. Getting folder metadata')
+      logger.info('DropboxService#searchForFolder :: Query is empty. Getting folder metadata')
 
       const metaDataResp = await dbxClient.filesGetMetadata({ path: tempPath })
       if (metaDataResp.status !== httpStatus.OK) {
