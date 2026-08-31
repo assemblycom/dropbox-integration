@@ -8,10 +8,13 @@ import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
 import { dropboxDeletedFactory, dropboxEntryFactory } from '../factories'
 import {
   dropboxFolderMetadata,
+  dropboxRpcError,
   mockCopilotCreateFile,
   mockCopilotDeleteFile,
   mockDropboxDownload,
   mockDropboxGetMetadata,
+  mockDropboxLatestCursor,
+  mockDropboxRpc,
   paginateDropboxListFolder,
   server,
 } from '../msw'
@@ -22,7 +25,7 @@ const ROOT = '/root'
 const ACCOUNT = 'acc-delta'
 
 // Seeds an active connection + channel with a non-empty cursor (so the delta loop
-// uses list_folder/continue) and mocks the root get_metadata handleDbxRootPathMove needs.
+// uses list_folder/continue).
 async function seedChannel() {
   const connection = await dropboxConnectionSeeder.create({
     accountId: ACCOUNT,
@@ -34,7 +37,6 @@ async function seedChannel() {
     dbxRootPath: ROOT,
     dbxCursor: 'cursor:0',
   })
-  mockDropboxGetMetadata({ [ROOT]: dropboxFolderMetadata({ path_display: ROOT }) })
   return channel
 }
 
@@ -221,5 +223,76 @@ describe('webhook delta: Dropbox -> Assembly', () => {
       deletedAt: null,
       pendingAction: null,
     })
+  })
+})
+
+// A moved/renamed/deleted root makes list_folder/continue fail with a 409 `path`.
+// We detect that reactively (no preemptive per-channel check) and recover the new path.
+describe('webhook delta: reactive root-move recovery', () => {
+  const dbxContinue = (resolver: Parameters<typeof mockDropboxRpc>[1]) =>
+    mockDropboxRpc('/2/files/list_folder/continue', resolver)
+
+  async function seedMovableChannel(account: string) {
+    const connection = await dropboxConnectionSeeder.create({
+      accountId: account,
+      rootNamespaceId: `ns-${account}`,
+      refreshToken: `rt-${account}`,
+    })
+    return channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: ROOT,
+      dbxRootId: 'id:root',
+      dbxCursor: 'cursor:0',
+    })
+  }
+
+  it('root moved (409 path) → recovers new path + cursor by id, skips the cycle', async () => {
+    const channel = await seedMovableChannel('acc-move')
+    dbxContinue(() =>
+      dropboxRpcError({
+        status: 409,
+        errorSummary: 'path/not_found/..',
+        error: { '.tag': 'path', path: { '.tag': 'not_found' } },
+      }),
+    )
+    // Recovery: resolve the new location by the stored dbxRootId, reset the cursor there.
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/moved-root' }) })
+    mockDropboxLatestCursor('cursor:new')
+
+    await new DropboxWebhook().fetchDropBoxChanges('acc-move')
+
+    const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(ch.dbxRootPath).toBe('/moved-root')
+    expect(ch.dbxCursor).toBe('cursor:new')
+    expect(ch.lastSyncedAt).toBeNull() // recovery is not a real sync
+  })
+
+  it('cursor reset (409 reset) → refreshes the cursor at the same path', async () => {
+    const channel = await seedMovableChannel('acc-reset')
+    dbxContinue(() =>
+      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
+    )
+    mockDropboxLatestCursor('cursor:new') // fresh cursor at the (unchanged) root
+
+    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-reset')).resolves.toBeUndefined()
+
+    const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(ch.dbxRootPath).toBe(ROOT) // folder is fine, path unchanged
+    expect(ch.dbxCursor).toBe('cursor:new')
+  })
+
+  it('cursor reset → refresh failure propagates so the run retries (cursor untouched)', async () => {
+    const channel = await seedMovableChannel('acc-reset-fail')
+    dbxContinue(() =>
+      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
+    )
+    mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () =>
+      dropboxRpcError({ status: 500, errorSummary: 'boom', error: {} }),
+    )
+
+    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-reset-fail')).rejects.toThrow()
+
+    const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(ch.dbxCursor).toBe('cursor:0') // stale cursor left as-is for the retry
   })
 })
