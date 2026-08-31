@@ -250,8 +250,9 @@ export class DropboxWebhook {
       }
     }
 
+    // Stamp lastSyncedAt only when the channel had changes.
     await mapFilesService.updateChannelMapById(
-      { dbxCursor: currentCursor, lastSyncedAt: new Date() },
+      { dbxCursor: currentCursor, ...(allChanges.length > 0 && { lastSyncedAt: new Date() }) },
       channelSyncId,
     )
   }
