@@ -1,6 +1,5 @@
 import { and, eq } from 'drizzle-orm'
-import { type Dropbox, DropboxResponseError } from 'dropbox'
-import httpStatus from 'http-status'
+import type { Dropbox } from 'dropbox'
 import z from 'zod'
 import env from '@/config/server.env'
 import db from '@/db'
@@ -9,9 +8,12 @@ import {
   type DropboxConnectionTokens,
   dropboxConnections,
 } from '@/db/schema/dropboxConnections.schema'
-import APIError from '@/errors/APIError'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import type { DropboxFileListFolderResultEntries } from '@/features/sync/types'
+import {
+  isDbxCursorResetError,
+  isDbxRootMovedError,
+} from '@/features/webhook/dropbox/utils/dbxCursorErrors'
 import { getDropboxChanges } from '@/features/webhook/dropbox/utils/getDropboxChanges'
 import { generateToken } from '@/lib/copilot/generateToken'
 import User from '@/lib/copilot/models/User.model'
@@ -98,15 +100,7 @@ export class DropboxWebhook {
 
     const dbxClient = new DropboxClient(refreshToken, rootNamespaceId).getDropboxClient()
     for (const channel of channels) {
-      const proceed = await this.handleDbxRootPathMove(channel, mapFilesService, dbxClient)
-      proceed &&
-        (await this.processChannelChanges(
-          channel,
-          dbxClient,
-          mapFilesService,
-          user,
-          connectionToken,
-        ))
+      await this.processChannelChanges(channel, dbxClient, mapFilesService, user, connectionToken)
     }
 
     // update last webhook synced at
@@ -121,47 +115,45 @@ export class DropboxWebhook {
     })
   }
 
-  async handleDbxRootPathMove(
+  // Root moved: find its new path by id, reset the cursor, and save both.
+  private async recoverMovedRoot(
     channel: ChannelSyncSelectType,
     mapFilesService: MapFilesService,
     dbxClient: Dropbox,
-  ): Promise<boolean> {
-    try {
-      logger.info(
-        `WebhookService#handleDbxRootPathMove. Root path: ${channel.dbxRootPath}. Assembly file channel ID: ${channel.assemblyChannelId} Checking if the root path exists...`,
-      )
-      const response = await this.getDropboxFileMetadata(channel.dbxRootPath, dbxClient)
-      if (response.result) return true
-      throw new APIError('Root path not found', httpStatus.NOT_FOUND)
-    } catch (error: unknown) {
-      logger.error(
-        'WebhookService#handleDbxRootPathMove :: Error handling dbx root path move',
-        error,
-      )
-      if (error instanceof DropboxResponseError && error.status === 409) {
-        logger.info(
-          'WebhookService#handleDbxRootPathMove :: Root path not found',
-          channel.dbxRootPath,
-        )
-        const response = await this.getDropboxFileMetadata(
-          z.string().parse(channel.dbxRootId),
-          dbxClient,
-        )
-        const cursorData = await dbxClient.filesListFolderGetLatestCursor({
-          path: z.string().parse(response.result.path_display),
-          recursive: true,
-        })
-        await mapFilesService.updateChannelMapById(
-          {
-            dbxRootPath: response.result.path_display,
-            dbxCursor: cursorData.result.cursor,
-          },
-          channel.id,
-        )
-        return false
-      }
-      throw error
-    }
+  ) {
+    logger.info(
+      `WebhookService#recoverMovedRoot :: Root path moved, recovering by id. Channel: ${channel.id}`,
+    )
+    const response = await this.getDropboxFileMetadata(
+      z.string().parse(channel.dbxRootId),
+      dbxClient,
+    )
+    const newPath = z.string().parse(response.result.path_display)
+    const cursorData = await dbxClient.filesListFolderGetLatestCursor({
+      path: newPath,
+      recursive: true,
+    })
+    await mapFilesService.updateChannelMapById(
+      { dbxRootPath: newPath, dbxCursor: cursorData.result.cursor },
+      channel.id,
+    )
+  }
+
+  // Cursor is stale but the folder is fine: get a fresh cursor at the same path.
+  private async recoverResetCursor(
+    channel: ChannelSyncSelectType,
+    mapFilesService: MapFilesService,
+    dbxClient: Dropbox,
+  ) {
+    logger.info(
+      `WebhookService#recoverResetCursor :: Cursor reset, refreshing. Channel: ${channel.id}`,
+    )
+    await this.getAndUpdateDropboxCursor({
+      dbxClient,
+      mapFilesService,
+      channelSyncId: channel.id,
+      dbxRootPath: channel.dbxRootPath,
+    })
   }
 
   private async getAndUpdateDropboxCursor({
@@ -201,60 +193,72 @@ export class DropboxWebhook {
     const { id: channelSyncId, dbxRootPath, assemblyChannelId, dbxCursor } = channel
     let hasMore = true
     let currentCursor = dbxCursor ?? ''
-    if (!currentCursor)
-      currentCursor = await this.getAndUpdateDropboxCursor({
-        dbxClient,
-        mapFilesService,
-        channelSyncId,
-        dbxRootPath,
-      })
 
-    const allChanges: DropboxFileListFolderResultEntries = []
-
-    while (hasMore) {
-      const dbxChanges = await getDropboxChanges(
-        currentCursor,
-        dbxRootPath,
-        dbxClient,
-        mapFilesService,
-        channelSyncId,
-      )
-      if (!dbxChanges) break
-
-      const { entries, newCursor, hasMore: more } = dbxChanges
-
-      allChanges.push(...entries)
-      currentCursor = newCursor
-      hasMore = more
-    }
-
-    if (allChanges.length > 0) {
-      const result = await handleChannelFileChanges.triggerAndWait(
-        {
-          files: allChanges,
+    try {
+      if (!currentCursor)
+        currentCursor = await this.getAndUpdateDropboxCursor({
+          dbxClient,
+          mapFilesService,
           channelSyncId,
           dbxRootPath,
-          assemblyChannelId,
-          user,
-          connectionToken,
-        },
-        { concurrencyKey: channelSyncId },
-      )
-      // Don't advance the cursor if change processing failed, or these deltas move
-      // past the cursor and are never re-fetched. Throwing lets the run retry from
-      // the same cursor.
-      if (!result.ok) {
-        throw new Error(`handleChannelFileChanges failed for channel ${channelSyncId}`, {
-          cause: result.error,
         })
+
+      const allChanges: DropboxFileListFolderResultEntries = []
+
+      while (hasMore) {
+        const dbxChanges = await getDropboxChanges(
+          currentCursor,
+          dbxRootPath,
+          dbxClient,
+          mapFilesService,
+          channelSyncId,
+        )
+        if (!dbxChanges) break
+
+        const { entries, newCursor, hasMore: more } = dbxChanges
+
+        allChanges.push(...entries)
+        currentCursor = newCursor
+        hasMore = more
+      }
+
+      if (allChanges.length > 0) {
+        const result = await handleChannelFileChanges.triggerAndWait(
+          {
+            files: allChanges,
+            channelSyncId,
+            dbxRootPath,
+            assemblyChannelId,
+            user,
+            connectionToken,
+          },
+          { concurrencyKey: channelSyncId },
+        )
+        // Don't advance the cursor if change processing failed, or these deltas move
+        // past the cursor and are never re-fetched. Throwing lets the run retry from
+        // the same cursor.
+        if (!result.ok) {
+          throw new Error(`handleChannelFileChanges failed for channel ${channelSyncId}`, {
+            cause: result.error,
+          })
+        }
+      }
+
+      // Stamp lastSyncedAt only when the channel had changes.
+      await mapFilesService.updateChannelMapById(
+        { dbxCursor: currentCursor, ...(allChanges.length > 0 && { lastSyncedAt: new Date() }) },
+        channelSyncId,
+      )
+    } catch (error) {
+      // Recover the two known cursor failures; let anything else propagate.
+      if (isDbxRootMovedError(error)) {
+        await this.recoverMovedRoot(channel, mapFilesService, dbxClient)
+      } else if (isDbxCursorResetError(error)) {
+        await this.recoverResetCursor(channel, mapFilesService, dbxClient)
+      } else {
+        throw error
       }
     }
-
-    // Stamp lastSyncedAt only when the channel had changes.
-    await mapFilesService.updateChannelMapById(
-      { dbxCursor: currentCursor, ...(allChanges.length > 0 && { lastSyncedAt: new Date() }) },
-      channelSyncId,
-    )
   }
 
   private async getActiveConnection(accountId: string) {
