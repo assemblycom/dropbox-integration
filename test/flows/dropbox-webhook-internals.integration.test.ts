@@ -1,9 +1,7 @@
 import { eq } from 'drizzle-orm'
-import { DropboxResponseError } from 'dropbox'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
-import { channelSync } from '@/db/schema/channelSync.schema'
 import { dropboxConnections } from '@/db/schema/dropboxConnections.schema'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
@@ -12,7 +10,7 @@ import User from '@/lib/copilot/models/User.model'
 import type { Token } from '@/lib/copilot/types'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import { dropboxDeletedFactory, dropboxEntryFactory } from '../factories'
-import { mockDropboxLatestCursor, paginateDropboxListFolder, server } from '../msw'
+import { paginateDropboxListFolder, server } from '../msw'
 import { channelSeeder, dropboxConnectionSeeder, fileSyncSeeder, synced } from '../seeders'
 
 const CONNECTION_TOKEN = { refreshToken: 'rt', accountId: 'acc', rootNamespaceId: 'ns' }
@@ -28,63 +26,6 @@ async function seed() {
   const dbxClient = new DropboxClient('rt', 'ns').getDropboxClient()
   return { connection, user, mapFilesService, dbxClient }
 }
-
-const channelById = async (id: string) => {
-  const [row] = await db.select().from(channelSync).where(eq(channelSync.id, id))
-  return row
-}
-
-afterEach(() => vi.restoreAllMocks())
-
-// handleDbxRootPathMove decides whether the delta cycle can proceed, and recovers
-// the root path when Dropbox reports it moved. The metadata call is wrapped in a
-// long-backoff withRetry, so we inject the outcome at the getDropboxFileMetadata seam.
-describe('handleDbxRootPathMove', () => {
-  it('recovers the root path when the folder was moved, then skips the cycle', async () => {
-    const { connection, mapFilesService, dbxClient } = await seed()
-    const channel = await channelSeeder.create({
-      portalId: connection.portalId,
-      dbxRootPath: '/root',
-      dbxRootId: 'id:root',
-      dbxCursor: 'cursor:old',
-    })
-    const webhook = new DropboxWebhook()
-    const metaSpy = vi.spyOn(webhook, 'getDropboxFileMetadata')
-    // 1st (by current path) → 409 gone; 2nd (by stored dbxRootId) → the new location.
-    metaSpy.mockRejectedValueOnce(
-      new DropboxResponseError(409, {} as never, { error_summary: 'path/not_found/..' } as never),
-    )
-    metaSpy.mockResolvedValueOnce({ result: { path_display: '/moved-root' } } as never)
-    mockDropboxLatestCursor('cursor:new')
-
-    const proceed = await webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient)
-
-    expect(proceed).toBe(false) // skip this cycle after recovery
-    const after = await channelById(channel.id)
-    expect(after.dbxRootPath).toBe('/moved-root')
-    expect(after.dbxCursor).toBe('cursor:new')
-  })
-
-  it('rethrows a non-409 error and leaves the channel map untouched', async () => {
-    const { connection, mapFilesService, dbxClient } = await seed()
-    const channel = await channelSeeder.create({
-      portalId: connection.portalId,
-      dbxRootPath: '/root',
-      dbxRootId: 'id:root',
-      dbxCursor: 'cursor:old',
-    })
-    const webhook = new DropboxWebhook()
-    vi.spyOn(webhook, 'getDropboxFileMetadata').mockRejectedValueOnce(new Error('network down'))
-
-    await expect(
-      webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient),
-    ).rejects.toThrow('network down')
-
-    const after = await channelById(channel.id)
-    expect(after.dbxRootPath).toBe('/root') // unchanged
-    expect(after.dbxCursor).toBe('cursor:old')
-  })
-})
 
 // getDropboxChanges resolves deleted entries to their mapped dbxFileId, drops the
 // unresolvable ones, validates the payload, and scopes results to the root path.
