@@ -115,15 +115,16 @@ export class DropboxWebhook {
     })
   }
 
-  // Root moved: find its new path by id, reset the cursor, and save both.
-  private async recoverMovedRoot(
+  // A cursor continue can fail because its root can't be resolved — the folder was moved
+  // (even out of its parent), renamed, or the cursor was reset while the stored path is
+  // stale. Never trust the stored path: re-resolve the folder's current path by its stable
+  // id, reset the cursor there, and save both path and cursor.
+  private async recoverCursor(
     channel: ChannelSyncSelectType,
     mapFilesService: MapFilesService,
     dbxClient: Dropbox,
   ) {
-    logger.info(
-      `WebhookService#recoverMovedRoot :: Root path moved, recovering by id. Channel: ${channel.id}`,
-    )
+    logger.info(`WebhookService#recoverCursor :: Recovering cursor by id. Channel: ${channel.id}`)
     const response = await this.getDropboxFileMetadata(
       z.string().parse(channel.dbxRootId),
       dbxClient,
@@ -137,23 +138,6 @@ export class DropboxWebhook {
       { dbxRootPath: newPath, dbxCursor: cursorData.result.cursor },
       channel.id,
     )
-  }
-
-  // Cursor is stale but the folder is fine: get a fresh cursor at the same path.
-  private async recoverResetCursor(
-    channel: ChannelSyncSelectType,
-    mapFilesService: MapFilesService,
-    dbxClient: Dropbox,
-  ) {
-    logger.info(
-      `WebhookService#recoverResetCursor :: Cursor reset, refreshing. Channel: ${channel.id}`,
-    )
-    await this.getAndUpdateDropboxCursor({
-      dbxClient,
-      mapFilesService,
-      channelSyncId: channel.id,
-      dbxRootPath: channel.dbxRootPath,
-    })
   }
 
   private async getAndUpdateDropboxCursor({
@@ -250,11 +234,10 @@ export class DropboxWebhook {
         channelSyncId,
       )
     } catch (error) {
-      // Recover the two known cursor failures; let anything else propagate.
-      if (isDbxRootMovedError(error)) {
-        await this.recoverMovedRoot(channel, mapFilesService, dbxClient)
-      } else if (isDbxCursorResetError(error)) {
-        await this.recoverResetCursor(channel, mapFilesService, dbxClient)
+      // A moved/renamed root or a cursor reset both fail here, and the stored path may be
+      // gone — so recover by re-resolving the folder by id. Anything else propagates.
+      if (isDbxRootMovedError(error) || isDbxCursorResetError(error)) {
+        await this.recoverCursor(channel, mapFilesService, dbxClient)
       } else {
         throw error
       }
