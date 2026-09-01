@@ -1,4 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm'
+import { HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
@@ -226,13 +227,13 @@ describe('webhook delta: Dropbox -> Assembly', () => {
   })
 })
 
-// A moved/renamed/deleted root makes list_folder/continue fail with a 409 `path`.
-// We detect that reactively (no preemptive per-channel check) and recover the new path.
-describe('webhook delta: reactive root-move recovery', () => {
+// A moved/renamed root or a reset both fail list_folder/continue with a 409. Either way the
+// stored path may be gone, so recovery always re-resolves the folder by its stable id.
+describe('webhook delta: cursor recovery (move / reset)', () => {
   const dbxContinue = (resolver: Parameters<typeof mockDropboxRpc>[1]) =>
     mockDropboxRpc('/2/files/list_folder/continue', resolver)
 
-  async function seedMovableChannel(account: string) {
+  async function seedMovableChannel(account: string, dbxRootPath = ROOT) {
     const connection = await dropboxConnectionSeeder.create({
       accountId: account,
       rootNamespaceId: `ns-${account}`,
@@ -240,13 +241,13 @@ describe('webhook delta: reactive root-move recovery', () => {
     })
     return channelSeeder.create({
       portalId: connection.portalId,
-      dbxRootPath: ROOT,
+      dbxRootPath,
       dbxRootId: 'id:root',
       dbxCursor: 'cursor:0',
     })
   }
 
-  it('root moved (409 path) → recovers new path + cursor by id, skips the cycle', async () => {
+  it('root renamed (409 path) → recovers new path + cursor by id', async () => {
     const channel = await seedMovableChannel('acc-move')
     dbxContinue(() =>
       dropboxRpcError({
@@ -255,7 +256,6 @@ describe('webhook delta: reactive root-move recovery', () => {
         error: { '.tag': 'path', path: { '.tag': 'not_found' } },
       }),
     )
-    // Recovery: resolve the new location by the stored dbxRootId, reset the cursor there.
     mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/moved-root' }) })
     mockDropboxLatestCursor('cursor:new')
 
@@ -267,25 +267,55 @@ describe('webhook delta: reactive root-move recovery', () => {
     expect(ch.lastSyncedAt).toBeNull() // recovery is not a real sync
   })
 
-  it('cursor reset (409 reset) → refreshes the cursor at the same path', async () => {
+  // Regression: a folder moved OUT of its parent surfaces as 409 `reset`. Recovery must
+  // re-resolve by id — NOT re-list at the stale stored path, which 409s and crashed the run.
+  it('root moved out of parent (409 reset, stale path gone) → recovers by id', async () => {
+    const channel = await seedMovableChannel('acc-moved-out', '/parent/child')
+    dbxContinue(() =>
+      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
+    )
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/child' }) })
+    // The old path no longer resolves; only the new path yields a cursor.
+    mockDropboxRpc('/2/files/list_folder/get_latest_cursor', async ({ request }) => {
+      const { path } = (await request.json()) as { path: string }
+      return path === '/child'
+        ? HttpResponse.json({ cursor: 'cursor:new' })
+        : dropboxRpcError({
+            status: 409,
+            errorSummary: 'path/not_found/..',
+            error: { '.tag': 'path', path: { '.tag': 'not_found' } },
+          })
+    })
+
+    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-moved-out')).resolves.toBeUndefined()
+
+    const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(ch.dbxRootPath).toBe('/child') // adopted the new path (no crash on the old one)
+    expect(ch.dbxCursor).toBe('cursor:new')
+  })
+
+  it('cursor reset with folder intact (409 reset) → refreshes cursor, path unchanged', async () => {
     const channel = await seedMovableChannel('acc-reset')
     dbxContinue(() =>
       dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
     )
-    mockDropboxLatestCursor('cursor:new') // fresh cursor at the (unchanged) root
+    // Folder is fine: id resolves to the same path.
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: ROOT }) })
+    mockDropboxLatestCursor('cursor:new')
 
     await expect(new DropboxWebhook().fetchDropBoxChanges('acc-reset')).resolves.toBeUndefined()
 
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
-    expect(ch.dbxRootPath).toBe(ROOT) // folder is fine, path unchanged
+    expect(ch.dbxRootPath).toBe(ROOT) // path unchanged
     expect(ch.dbxCursor).toBe('cursor:new')
   })
 
-  it('cursor reset → refresh failure propagates so the run retries (cursor untouched)', async () => {
+  it('recovery failure propagates so the run retries (cursor untouched)', async () => {
     const channel = await seedMovableChannel('acc-reset-fail')
     dbxContinue(() =>
       dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
     )
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: ROOT }) })
     mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () =>
       dropboxRpcError({ status: 500, errorSummary: 'boom', error: {} }),
     )
