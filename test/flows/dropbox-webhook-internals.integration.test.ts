@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { DropboxResponseError } from 'dropbox'
+import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
@@ -11,8 +12,14 @@ import { getDropboxChanges } from '@/features/webhook/dropbox/utils/getDropboxCh
 import User from '@/lib/copilot/models/User.model'
 import type { Token } from '@/lib/copilot/types'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
+import { handleChannelFileChanges } from '@/trigger/processFileSync'
 import { dropboxDeletedFactory, dropboxEntryFactory } from '../factories'
-import { mockDropboxLatestCursor, paginateDropboxListFolder, server } from '../msw'
+import {
+  DROPBOX_RPC_HOST,
+  mockDropboxLatestCursor,
+  paginateDropboxListFolder,
+  server,
+} from '../msw'
 import { channelSeeder, dropboxConnectionSeeder, fileSyncSeeder, synced } from '../seeders'
 
 const CONNECTION_TOKEN = { refreshToken: 'rt', accountId: 'acc', rootNamespaceId: 'ns' }
@@ -83,6 +90,108 @@ describe('handleDbxRootPathMove', () => {
     const after = await channelById(channel.id)
     expect(after.dbxRootPath).toBe('/root') // unchanged
     expect(after.dbxCursor).toBe('cursor:old')
+  })
+
+  it('fails safely when the moved root has no saved id, leaving the channel map untouched', async () => {
+    const { connection, mapFilesService, dbxClient } = await seed()
+    const channel = await channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: '/root',
+      dbxRootId: null, // nothing to recover the new location from
+      dbxCursor: 'cursor:old',
+    })
+    const webhook = new DropboxWebhook()
+    // Current path is gone (409); with no saved root id, recovery can't proceed.
+    vi.spyOn(webhook, 'getDropboxFileMetadata').mockRejectedValueOnce(
+      new DropboxResponseError(409, {} as never, { error_summary: 'path/not_found/..' } as never),
+    )
+
+    await expect(
+      webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient),
+    ).rejects.toThrow()
+
+    const after = await channelById(channel.id)
+    expect(after.dbxRootPath).toBe('/root') // unchanged
+    expect(after.dbxCursor).toBe('cursor:old') // cursor not advanced or cleared
+  })
+})
+
+// The full webhook change-sync path per account. The cursor must be established on
+// the first run and must never move forward unless the changes were applied.
+describe('fetchDropBoxChanges cursor safety', () => {
+  const fakeAuthFor = (portalId: string) =>
+    vi
+      .spyOn(User, 'authenticate')
+      .mockResolvedValue(new User('test-token', { workspaceId: portalId } as Token))
+
+  // Root exists → the delta cycle proceeds (skip the long-backoff metadata call).
+  const stubRootExists = (webhook: DropboxWebhook) =>
+    vi
+      .spyOn(webhook, 'getDropboxFileMetadata')
+      .mockResolvedValue({ result: { path_display: '/root' } } as never)
+
+  it('sets a starting cursor on the first sync when the channel has none', async () => {
+    const { connection } = await seed()
+    fakeAuthFor(connection.portalId)
+    const channel = await channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: '/root',
+      dbxRootId: 'id:root',
+      dbxCursor: null, // first sync, no cursor yet
+    })
+    const webhook = new DropboxWebhook()
+    stubRootExists(webhook)
+    // Record that the first-sync baseline (get_latest_cursor) actually ran.
+    let baselined = false
+    server.use(
+      http.post(`${DROPBOX_RPC_HOST}/2/files/list_folder/get_latest_cursor`, () => {
+        baselined = true
+        return HttpResponse.json({ cursor: 'cursor:0' })
+      }),
+    )
+    server.use(...paginateDropboxListFolder([])) // no changes since the baseline
+
+    await webhook.fetchDropBoxChanges(connection.accountId as string)
+
+    expect(baselined).toBe(true) // baselined instead of syncing from an empty cursor
+    const after = await channelById(channel.id)
+    expect(after.dbxCursor).toBe('cursor:0') // starting point saved
+    expect(after.lastSyncedAt).not.toBeNull()
+  })
+
+  it('does not advance the cursor when applying the changes fails', async () => {
+    const { connection } = await seed()
+    fakeAuthFor(connection.portalId)
+    const channel = await channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: '/root',
+      dbxRootId: 'id:root',
+      dbxCursor: 'cursor:0', // already has a cursor
+    })
+    const webhook = new DropboxWebhook()
+    stubRootExists(webhook)
+    // One change is waiting under the root.
+    server.use(
+      ...paginateDropboxListFolder([
+        dropboxEntryFactory.build({
+          id: 'dbx:new',
+          name: 'new.txt',
+          path_display: '/root/new.txt',
+        }),
+      ]),
+    )
+    // Applying the change fails.
+    vi.spyOn(handleChannelFileChanges, 'triggerAndWait').mockRejectedValue(
+      new Error('apply failed'),
+    )
+
+    await expect(webhook.fetchDropBoxChanges(connection.accountId as string)).rejects.toThrow(
+      'apply failed',
+    )
+
+    const after = await channelById(channel.id)
+    expect(after.dbxCursor).toBe('cursor:0') // NOT advanced — the changes get retried
+    expect(after.lastSyncedAt).toBeNull() // sync never marked complete
   })
 })
 
