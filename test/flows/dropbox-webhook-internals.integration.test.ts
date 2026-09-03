@@ -106,9 +106,11 @@ describe('handleDbxRootPathMove', () => {
       new DropboxResponseError(409, {} as never, { error_summary: 'path/not_found/..' } as never),
     )
 
+    // Specifically the missing-root-id guard (not just any throw): the second
+    // metadata lookup must never be reached with a null id.
     await expect(
       webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient),
-    ).rejects.toThrow()
+    ).rejects.toThrow(/expected string, received null/i)
 
     const after = await channelById(channel.id)
     expect(after.dbxRootPath).toBe('/root') // unchanged
@@ -141,12 +143,14 @@ describe('fetchDropBoxChanges cursor safety', () => {
     })
     const webhook = new DropboxWebhook()
     stubRootExists(webhook)
-    // Record that the first-sync baseline (get_latest_cursor) actually ran.
+    // Record that the first-sync baseline (get_latest_cursor) actually ran. Its
+    // cursor value 'cursor:99' is distinct from what an empty-cursor sync would
+    // produce ('cursor:0'), so the saved cursor below fails if the baseline is skipped.
     let baselined = false
     server.use(
       http.post(`${DROPBOX_RPC_HOST}/2/files/list_folder/get_latest_cursor`, () => {
         baselined = true
-        return HttpResponse.json({ cursor: 'cursor:0' })
+        return HttpResponse.json({ cursor: 'cursor:99' })
       }),
     )
     server.use(...paginateDropboxListFolder([])) // no changes since the baseline
@@ -155,7 +159,7 @@ describe('fetchDropBoxChanges cursor safety', () => {
 
     expect(baselined).toBe(true) // baselined instead of syncing from an empty cursor
     const after = await channelById(channel.id)
-    expect(after.dbxCursor).toBe('cursor:0') // starting point saved
+    expect(after.dbxCursor).toBe('cursor:99') // the baseline cursor was saved
     expect(after.lastSyncedAt).not.toBeNull()
   })
 
