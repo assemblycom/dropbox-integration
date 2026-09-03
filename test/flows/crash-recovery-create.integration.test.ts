@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { HttpResponse, http } from 'msw'
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import db from '@/db'
 import { ObjectType, PendingActionTarget } from '@/db/constants'
 import { channelSync } from '@/db/schema/channelSync.schema'
@@ -15,6 +16,7 @@ import { copilotDownloadableFactory, copilotFileFactory, dropboxEntryFactory } f
 import {
   dropboxFileMetadata,
   mockAssemblyFileDownload,
+  mockCopilot,
   mockCopilotCreateFile,
   mockCopilotDeleteFile,
   mockCopilotRetrieveFile,
@@ -68,10 +70,41 @@ const dbxEntry = () =>
     content_hash: 'h',
   })
 
+// Assembly renames a duplicate path (/f.txt -> /f (1).txt) instead of rejecting,
+// and the new file starts pending. Returns the paths it handed back, in order.
+const mockAssemblyCreateRenamingDuplicates = (uploadUrl: string) => {
+  const createdPaths: string[] = []
+  mockCopilot(
+    '/v1/files/:fileType',
+    async ({ request, params }) => {
+      const { path, channelID } = (await request.json()) as { path: string; channelID: string }
+      const fileType = params.fileType as string
+      let finalPath = path
+      let n = 0
+      while (createdPaths.includes(finalPath)) {
+        n += 1
+        finalPath = path.replace(/(\.[^.]+)?$/, ` (${n})$1`)
+      }
+      createdPaths.push(finalPath)
+      return HttpResponse.json({
+        id: randomUUID(),
+        channelId: channelID,
+        name: finalPath.slice(finalPath.lastIndexOf('/') + 1),
+        object: fileType,
+        path: finalPath,
+        ...(fileType === 'file' ? { uploadUrl } : {}),
+      })
+    },
+    'post',
+  )
+  server.use(http.put(uploadUrl, () => new HttpResponse(null, { status: 200 })))
+  return { createdPaths }
+}
+
 afterEach(() => vi.restoreAllMocks())
 
 // ---------------------------------------------------------------------------
-// Dropbox -> Assembly: createFile -> stamp id -> upload -> markUpdated -> count++
+// Dropbox -> Assembly steps: create file -> save id -> upload -> mark done -> count++
 // ---------------------------------------------------------------------------
 describe('crash recovery: Dropbox -> Assembly create', () => {
   const seedPendingRow = (channelId: string) =>
@@ -96,33 +129,23 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
       assemblyCreatePath: '/f.txt',
     })
 
-  // A1 — crash after createFile, before the id is stamped onto the row.
-  it('crashes before stamping the id: sweeper recovers but leaks an orphan Assembly file (KNOWN GAP)', async () => {
+  // Crash after the file is created in Assembly, before its id is saved.
+  it('crashes before saving the id: recovery makes a second renamed file and orphans the first (KNOWN GAP)', async () => {
     const { connection, channel, svc } = await seed()
     const row = await seedPendingRow(channel.id)
 
-    // Count Assembly file creations at the HTTP boundary (POST /v1/files/*).
-    let assemblyCreates = 0
-    const onRequest = ({ request }: { request: Request }) => {
-      if (request.method === 'POST' && new URL(request.url).pathname.startsWith('/v1/files/')) {
-        assemblyCreates += 1
-      }
-    }
-    server.events.on('request:start', onRequest)
-    // resetHandlers() doesn't clear event listeners; drop it whatever the outcome.
-    onTestFinished(() => server.events.removeListener('request:start', onRequest))
-
+    const { createdPaths } = mockAssemblyCreateRenamingDuplicates('https://upload.example/put-a1')
     crashAt('updateFileMap')
-    mockCopilotCreateFile()
     mockDropboxDownload({ '/root/f.txt': 'bytes' })
 
     await expect(drive(svc, channel, row.id)).rejects.toThrow('crash')
 
     const crashed = await rowById(row.id)
-    expect(crashed.assemblyFileId).toBeNull() // id never stamped
+    expect(crashed.assemblyFileId).toBeNull() // id never saved
     expect(crashed.pendingAction).toBe('create')
 
-    // Sweep: no assemblyFileId → the sweeper recreates from scratch.
+    // Sweep: no id → recreate. The orphan still holds /f.txt, so Assembly renames
+    // this one to /f (1).txt.
     mockDropboxGetMetadata({
       'dbx:f': dropboxFileMetadata({ path_display: '/root/f.txt', id: 'dbx:f' }),
     })
@@ -134,11 +157,13 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
     expect(after.deletedAt).toBeNull()
     expect(await countOf(channel.id)).toBe(1) // count correct
 
-    // KNOWN GAP: two files created (crash + recovery); the first is left orphaned.
-    expect(assemblyCreates).toBe(2)
+    // KNOWN GAP: two files exist — the first orphaned at /f.txt, and the recovered
+    // one Assembly renamed to /f (1).txt, now mismatched from the Dropbox path.
+    expect(createdPaths).toEqual(['/f.txt', '/f (1).txt'])
+    expect(after.assemblyPath).toBe('/f (1).txt')
   })
 
-  // A2 — crash after the id is stamped, before the bytes are uploaded.
+  // Crash after the id is saved, before the file is uploaded.
   it('crashes before upload: an abandoned stamped row is reclaimed and fully recovered', async () => {
     const { connection, channel, svc } = await seed()
     const row = await fileSyncSeeder.create({
@@ -162,7 +187,7 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
     const crashed = await rowById(row.id)
     const stampedId = crashed.assemblyFileId
     expect(stampedId).toBeTruthy() // id stamped before the failed upload
-    expect(crashed.assemblyPath).toBeNull() // never reached markUpdated
+    expect(crashed.assemblyPath).toBeNull() // never marked done
     expect(crashed.pendingAction).toBe('create')
 
     // Sweep: stamped file is still `pending` and the row is stale → delete + recreate.
@@ -190,7 +215,7 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
     expect(await countOf(channel.id)).toBe(1)
   })
 
-  // A3 — crash after the upload, before markUpdated. Cleanest recovery.
+  // Crash after the upload, before the record is marked done. Cleanest recovery.
   it('crashes before markUpdated: sweeper reconciles the already-completed file', async () => {
     const { connection, channel, svc } = await seed()
     const row = await seedPendingRow(channel.id)
@@ -204,10 +229,10 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
     const crashed = await rowById(row.id)
     const stampedId = crashed.assemblyFileId
     expect(stampedId).toBeTruthy()
-    expect(crashed.assemblyPath).toBeNull() // markUpdated never ran
+    expect(crashed.assemblyPath).toBeNull() // never marked done
     expect(crashed.pendingAction).toBe('create')
 
-    // Sweep: the stamped file is `completed` → reconcile straight to markUpdated.
+    // Sweep: the saved file is already completed, so recovery just marks it done.
     mockDropboxGetMetadata({
       'dbx:f': dropboxFileMetadata({ path_display: '/root/f.txt', id: 'dbx:f' }),
     })
@@ -229,7 +254,7 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
     expect(await countOf(channel.id)).toBe(1)
   })
 
-  // A4 — crash after markUpdated, before the count bump.
+  // Crash after the record is marked done, before the count bump.
   it('crashes before the count bump: file is synced but the count under-counts (KNOWN GAP)', async () => {
     const { channel, svc } = await seed()
     const row = await seedPendingRow(channel.id)
@@ -255,7 +280,7 @@ describe('crash recovery: Dropbox -> Assembly create', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Assembly -> Dropbox: create+upload -> markUpdated -> count++
+// Assembly -> Dropbox steps: create + upload -> mark done -> count++
 // ---------------------------------------------------------------------------
 describe('crash recovery: Assembly -> Dropbox create', () => {
   const seedPendingRow = (channelId: string, assemblyFileId: string) =>
@@ -280,7 +305,7 @@ describe('crash recovery: Assembly -> Dropbox create', () => {
       file: { ...assemblyFile, object: ObjectType.FILE, path: 'f.txt' } as never,
     })
 
-  // D1 — crash after the Dropbox upload, before markUpdated.
+  // Crash after the Dropbox upload, before the record is marked done.
   it('crashes before markUpdated: recovery renames the existing file, leaving a duplicate (KNOWN GAP)', async () => {
     const { connection, channel, svc } = await seed()
     const assemblyFile = copilotDownloadableFactory.build() // completed, has downloadUrl
@@ -322,7 +347,7 @@ describe('crash recovery: Assembly -> Dropbox create', () => {
     expect(movedFrom).toEqual(['/root/f.txt'])
   })
 
-  // D2 — crash after markUpdated, before the count bump.
+  // Crash after the record is marked done, before the count bump.
   it('crashes before the count bump: file is synced but the count under-counts (KNOWN GAP)', async () => {
     const { channel, svc } = await seed()
     const assemblyFile = copilotDownloadableFactory.build()
