@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm'
-import { DropboxResponseError } from 'dropbox'
 import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
+import { channelSync } from '@/db/schema/channelSync.schema'
 import { dropboxConnections } from '@/db/schema/dropboxConnections.schema'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import { DropboxWebhook } from '@/features/webhook/dropbox/lib/webhook.service'
@@ -13,12 +13,7 @@ import type { Token } from '@/lib/copilot/types'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import { handleChannelFileChanges } from '@/trigger/processFileSync'
 import { dropboxDeletedFactory, dropboxEntryFactory } from '../factories'
-import {
-  DROPBOX_RPC_HOST,
-  mockDropboxLatestCursor,
-  paginateDropboxListFolder,
-  server,
-} from '../msw'
+import { DROPBOX_RPC_HOST, paginateDropboxListFolder, server } from '../msw'
 import { channelSeeder, dropboxConnectionSeeder, fileSyncSeeder, synced } from '../seeders'
 
 const CONNECTION_TOKEN = { refreshToken: 'rt', accountId: 'acc', rootNamespaceId: 'ns' }
@@ -41,81 +36,6 @@ const channelById = async (id: string) => {
 }
 
 afterEach(() => vi.restoreAllMocks())
-
-// handleDbxRootPathMove decides whether the delta cycle can proceed, and recovers
-// the root path when Dropbox reports it moved. The metadata call is wrapped in a
-// long-backoff withRetry, so we inject the outcome at the getDropboxFileMetadata seam.
-describe('handleDbxRootPathMove', () => {
-  it('recovers the root path when the folder was moved, then skips the cycle', async () => {
-    const { connection, mapFilesService, dbxClient } = await seed()
-    const channel = await channelSeeder.create({
-      portalId: connection.portalId,
-      dbxRootPath: '/root',
-      dbxRootId: 'id:root',
-      dbxCursor: 'cursor:old',
-    })
-    const webhook = new DropboxWebhook()
-    const metaSpy = vi.spyOn(webhook, 'getDropboxFileMetadata')
-    // 1st (by current path) → 409 gone; 2nd (by stored dbxRootId) → the new location.
-    metaSpy.mockRejectedValueOnce(
-      new DropboxResponseError(409, {} as never, { error_summary: 'path/not_found/..' } as never),
-    )
-    metaSpy.mockResolvedValueOnce({ result: { path_display: '/moved-root' } } as never)
-    mockDropboxLatestCursor('cursor:new')
-
-    const proceed = await webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient)
-
-    expect(proceed).toBe(false) // skip this cycle after recovery
-    const after = await channelById(channel.id)
-    expect(after.dbxRootPath).toBe('/moved-root')
-    expect(after.dbxCursor).toBe('cursor:new')
-  })
-
-  it('rethrows a non-409 error and leaves the channel map untouched', async () => {
-    const { connection, mapFilesService, dbxClient } = await seed()
-    const channel = await channelSeeder.create({
-      portalId: connection.portalId,
-      dbxRootPath: '/root',
-      dbxRootId: 'id:root',
-      dbxCursor: 'cursor:old',
-    })
-    const webhook = new DropboxWebhook()
-    vi.spyOn(webhook, 'getDropboxFileMetadata').mockRejectedValueOnce(new Error('network down'))
-
-    await expect(
-      webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient),
-    ).rejects.toThrow('network down')
-
-    const after = await channelById(channel.id)
-    expect(after.dbxRootPath).toBe('/root') // unchanged
-    expect(after.dbxCursor).toBe('cursor:old')
-  })
-
-  it('fails safely when the moved root has no saved id, leaving the channel map untouched', async () => {
-    const { connection, mapFilesService, dbxClient } = await seed()
-    const channel = await channelSeeder.create({
-      portalId: connection.portalId,
-      dbxRootPath: '/root',
-      dbxRootId: null, // nothing to recover the new location from
-      dbxCursor: 'cursor:old',
-    })
-    const webhook = new DropboxWebhook()
-    // Current path is gone (409); with no saved root id, recovery can't proceed.
-    vi.spyOn(webhook, 'getDropboxFileMetadata').mockRejectedValueOnce(
-      new DropboxResponseError(409, {} as never, { error_summary: 'path/not_found/..' } as never),
-    )
-
-    // Specifically the missing-root-id guard (not just any throw): the second
-    // metadata lookup must never be reached with a null id.
-    await expect(
-      webhook.handleDbxRootPathMove(channel, mapFilesService, dbxClient),
-    ).rejects.toThrow(/expected string, received null/i)
-
-    const after = await channelById(channel.id)
-    expect(after.dbxRootPath).toBe('/root') // unchanged
-    expect(after.dbxCursor).toBe('cursor:old') // cursor not advanced or cleared
-  })
-})
 
 // The full webhook change-sync path per account. The cursor must be established on
 // the first run and must never move forward unless the changes were applied.
@@ -159,7 +79,7 @@ describe('fetchDropBoxChanges cursor safety', () => {
     expect(baselined).toBe(true) // baselined instead of syncing from an empty cursor
     const after = await channelById(channel.id)
     expect(after.dbxCursor).toBe('cursor:99') // the baseline cursor was saved
-    expect(after.lastSyncedAt).not.toBeNull()
+    expect(after.lastSyncedAt).toBeNull() // no changes to apply, so not marked as synced
   })
 
   it('does not advance the cursor when applying the changes fails', async () => {

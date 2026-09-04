@@ -325,4 +325,30 @@ describe('webhook delta: cursor recovery (move / reset)', () => {
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
     expect(ch.dbxCursor).toBe('cursor:0') // stale cursor left as-is for the retry
   })
+
+  it('recovery cannot run without a saved root id → propagates, cursor untouched', async () => {
+    const connection = await dropboxConnectionSeeder.create({
+      accountId: 'acc-no-root-id',
+      rootNamespaceId: 'ns-acc-no-root-id',
+      refreshToken: 'rt-acc-no-root-id',
+    })
+    const channel = await channelSeeder.create({
+      portalId: connection.portalId,
+      dbxRootPath: ROOT,
+      dbxRootId: null, // no id to re-resolve the folder by
+      dbxCursor: 'cursor:0',
+    })
+    dbxContinue(() =>
+      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
+    )
+
+    // Assert the missing-id guard fires (parse throws) before any metadata lookup,
+    // not just that the run rejects for some later reason.
+    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-no-root-id')).rejects.toThrow(
+      /expected string, received null/i,
+    )
+
+    const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(ch.dbxCursor).toBe('cursor:0') // stale cursor left as-is for the retry
+  })
 })
