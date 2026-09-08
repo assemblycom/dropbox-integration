@@ -32,26 +32,31 @@ export const classifyDbxChanges = (
   entries: DropboxFileListFolderSingleEntry[],
   mappedRows: MappedFileRow[],
 ): DbxChangeClassification => {
+  // Set/Map lookups keep this linear when a cursor recovery feeds a full folder listing.
   // Caller queries with `dbxFileId IS NOT NULL`; drop any null defensively so ids stay strings.
-  const mappedIds = mappedRows.map((row) => row.dbxFileId).filter((id): id is string => id !== null)
+  const contentHashById = new Map<string, string | null>()
+  for (const row of mappedRows) {
+    if (row.dbxFileId !== null) contentHashById.set(row.dbxFileId, row.contentHash)
+  }
+  const mappedIds = new Set(contentHashById.keys())
 
-  const deleted = entries.filter(
-    (entry) => entry['.tag'] === 'deleted' && mappedIds.includes(entry.id),
-  )
-  const deletedIds = deleted.map((entry) => entry.id)
+  const deleted = entries.filter((entry) => entry['.tag'] === 'deleted' && mappedIds.has(entry.id))
+  const deletedIds = new Set(deleted.map((entry) => entry.id))
 
-  // Ids still mapped after removing the ones being deleted in this batch.
-  const remainingIds = mappedIds.filter((id) => !deletedIds.includes(id))
-
-  const created = entries.filter(
-    (entry) => entry['.tag'] !== 'deleted' && !remainingIds.includes(entry.id),
-  )
-  const createdIds = created.map((entry) => entry.id)
+  // A create is a brand-new id, or the new-path half of a rename (its id also appears as a
+  // delete in this batch, so it must be created at the new path). Deletes handled above.
+  const created = entries.filter((entry) => {
+    if (entry['.tag'] === 'deleted') return false
+    const isNewId = !mappedIds.has(entry.id)
+    const isNewPathOfRename = deletedIds.has(entry.id)
+    return isNewId || isNewPathOfRename
+  })
+  const createdIds = new Set(created.map((entry) => entry.id))
 
   const contentUpdated = entries.filter((entry) => {
-    if (entry['.tag'] === 'deleted' || createdIds.includes(entry.id)) return false
-    const existing = mappedRows.find((row) => row.dbxFileId === entry.id)
-    return !!existing?.contentHash && existing.contentHash !== entry.content_hash
+    if (entry['.tag'] === 'deleted' || createdIds.has(entry.id)) return false
+    const existingHash = contentHashById.get(entry.id)
+    return !!existingHash && existingHash !== entry.content_hash
   })
 
   return {
