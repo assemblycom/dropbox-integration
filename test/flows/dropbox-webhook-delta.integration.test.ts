@@ -1,5 +1,4 @@
 import { and, eq, isNull } from 'drizzle-orm'
-import { HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import db from '@/db'
 import { ObjectType } from '@/db/constants'
@@ -14,7 +13,6 @@ import {
   mockCopilotDeleteFile,
   mockDropboxDownload,
   mockDropboxGetMetadata,
-  mockDropboxLatestCursor,
   mockDropboxRpc,
   paginateDropboxListFolder,
   server,
@@ -227,11 +225,22 @@ describe('webhook delta: Dropbox -> Assembly', () => {
   })
 })
 
-// A moved/renamed root or a reset both fail list_folder/continue with a 409. Either way the
-// stored path may be gone, so recovery always re-resolves the folder by its stable id.
-describe('webhook delta: cursor recovery (move / reset)', () => {
+// A moved/renamed root or a reset both fail list_folder/continue with a 409. Recovery
+// re-resolves the folder by its stable id, then RECONCILES: it re-lists the folder and
+// diffs against sync records so changes in the skipped gap (dead cursor → now) are not
+// lost. The re-listing's own cursor becomes the new baseline.
+describe('webhook delta: cursor recovery + reconcile (move / reset)', () => {
   const dbxContinue = (resolver: Parameters<typeof mockDropboxRpc>[1]) =>
     mockDropboxRpc('/2/files/list_folder/continue', resolver)
+
+  const rootMoved = () =>
+    dropboxRpcError({
+      status: 409,
+      errorSummary: 'path/not_found/..',
+      error: { '.tag': 'path', path: { '.tag': 'not_found' } },
+    })
+  const cursorReset = () =>
+    dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } })
 
   async function seedMovableChannel(account: string, dbxRootPath = ROOT) {
     const connection = await dropboxConnectionSeeder.create({
@@ -243,87 +252,166 @@ describe('webhook delta: cursor recovery (move / reset)', () => {
       portalId: connection.portalId,
       dbxRootPath,
       dbxRootId: 'id:root',
-      dbxCursor: 'cursor:0',
+      dbxCursor: 'cursor:stale',
     })
   }
 
-  it('root renamed (409 path) → recovers new path + cursor by id', async () => {
+  it('root renamed (409 path) → reconciles a file added in the gap, adopts new path + listing cursor', async () => {
     const channel = await seedMovableChannel('acc-move')
-    dbxContinue(() =>
-      dropboxRpcError({
-        status: 409,
-        errorSummary: 'path/not_found/..',
-        error: { '.tag': 'path', path: { '.tag': 'not_found' } },
-      }),
-    )
+    // The re-listing at the new path surfaces a file added during the skipped gap.
+    const added = dropboxEntryFactory.build({
+      id: 'dbx:added',
+      name: 'added.txt',
+      path_display: '/moved-root/added.txt',
+      content_hash: 'h-added',
+    })
+    server.use(...paginateDropboxListFolder([added]))
+    dbxContinue(rootMoved) // registered last so the dead-cursor 409 wins over the paginator
     mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/moved-root' }) })
-    mockDropboxLatestCursor('cursor:new')
+    mockCopilotCreateFile()
+    mockDropboxDownload({ '/moved-root/added.txt': 'bytes' })
 
     await new DropboxWebhook().fetchDropBoxChanges('acc-move')
 
+    const [row] = await db
+      .select()
+      .from(fileFolderSync)
+      .where(eq(fileFolderSync.dbxFileId, 'dbx:added'))
+    expect(row).toMatchObject({ itemPath: '/added.txt', deletedAt: null, pendingAction: null })
+    expect(row.assemblyFileId).toMatch(UUID_RE)
+
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
     expect(ch.dbxRootPath).toBe('/moved-root')
-    expect(ch.dbxCursor).toBe('cursor:new')
-    expect(ch.lastSyncedAt).toBeNull() // recovery is not a real sync
+    expect(ch.dbxCursor).toBe('cursor:1') // the re-listing's own cursor, not the dead one
+    expect(ch.lastSyncedAt).not.toBeNull() // the gap had a real change
   })
 
-  // Regression: a folder moved OUT of its parent surfaces as 409 `reset`. Recovery must
-  // re-resolve by id — NOT re-list at the stale stored path, which 409s and crashed the run.
-  it('root moved out of parent (409 reset, stale path gone) → recovers by id', async () => {
-    const channel = await seedMovableChannel('acc-moved-out', '/parent/child')
-    dbxContinue(() =>
-      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
-    )
-    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/child' }) })
-    // The old path no longer resolves; only the new path yields a cursor.
-    mockDropboxRpc('/2/files/list_folder/get_latest_cursor', async ({ request }) => {
-      const { path } = (await request.json()) as { path: string }
-      return path === '/child'
-        ? HttpResponse.json({ cursor: 'cursor:new' })
-        : dropboxRpcError({
-            status: 409,
-            errorSummary: 'path/not_found/..',
-            error: { '.tag': 'path', path: { '.tag': 'not_found' } },
-          })
+  it('cursor reset (409 reset) → reconciles a file deleted in the gap', async () => {
+    const channel = await seedMovableChannel('acc-reset-del')
+    const gone = await fileSyncSeeder.create({
+      ...synced(),
+      channelSyncId: channel.id,
+      itemPath: '/gone.txt',
+      dbxFileId: 'dbx:gone',
+      object: ObjectType.FILE,
+      contentHash: 'h',
     })
+    // Folder intact (id resolves to same path), but the file is gone from the listing.
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: ROOT }) })
+    server.use(...paginateDropboxListFolder([]))
+    dbxContinue(cursorReset) // registered last so the dead-cursor 409 wins over the paginator
+    const { deletedIds } = mockCopilotDeleteFile()
 
-    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-moved-out')).resolves.toBeUndefined()
+    await new DropboxWebhook().fetchDropBoxChanges('acc-reset-del')
+
+    const [row] = await db
+      .select()
+      .from(fileFolderSync)
+      .where(eq(fileFolderSync.dbxFileId, 'dbx:gone'))
+    expect(row.deletedAt).not.toBeNull()
+    expect(await liveRows(channel.id)).toHaveLength(0)
+    expect(deletedIds).toEqual([gone.assemblyFileId]) // the mapped Copilot file was removed
 
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
-    expect(ch.dbxRootPath).toBe('/child') // adopted the new path (no crash on the old one)
-    expect(ch.dbxCursor).toBe('cursor:new')
+    expect(ch.dbxRootPath).toBe(ROOT)
+    expect(ch.dbxCursor).toBe('cursor:0') // empty listing's cursor
+    expect(ch.lastSyncedAt).not.toBeNull()
   })
 
-  it('cursor reset with folder intact (409 reset) → refreshes cursor, path unchanged', async () => {
-    const channel = await seedMovableChannel('acc-reset')
-    dbxContinue(() =>
-      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
-    )
-    // Folder is fine: id resolves to the same path.
+  it('file renamed in the gap (same id, new path) → old soft-deleted, new live at the new path', async () => {
+    const channel = await seedMovableChannel('acc-reset-rename')
+    const old = await fileSyncSeeder.create({
+      ...synced(),
+      channelSyncId: channel.id,
+      itemPath: '/old.txt',
+      dbxFileId: 'dbx:moved',
+      object: ObjectType.FILE,
+      contentHash: 'h',
+    })
+    // Folder intact, but the file is listed under the same id at a new path — a rename
+    // during the gap that a full listing carries no delete marker for.
     mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: ROOT }) })
-    mockDropboxLatestCursor('cursor:new')
+    const renamed = dropboxEntryFactory.build({
+      id: 'dbx:moved',
+      name: 'new.txt',
+      path_display: '/root/new.txt',
+      content_hash: 'h',
+    })
+    server.use(...paginateDropboxListFolder([renamed]))
+    dbxContinue(cursorReset) // registered last so the dead-cursor 409 wins over the paginator
+    const { deletedIds } = mockCopilotDeleteFile()
+    mockCopilotCreateFile()
+    mockDropboxDownload({ '/root/new.txt': 'bytes' })
 
-    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-reset')).resolves.toBeUndefined()
+    await new DropboxWebhook().fetchDropBoxChanges('acc-reset-rename')
+
+    const rows = await db
+      .select()
+      .from(fileFolderSync)
+      .where(eq(fileFolderSync.channelSyncId, channel.id))
+    const oldRow = rows.find((r) => r.itemPath === '/old.txt')
+    const newRow = rows.find((r) => r.itemPath === '/new.txt')
+    expect(oldRow?.deletedAt).not.toBeNull()
+    expect(newRow).toMatchObject({ dbxFileId: 'dbx:moved', deletedAt: null, pendingAction: null })
+    expect(newRow?.assemblyFileId).toMatch(UUID_RE)
+    // outbound: the OLD Copilot file was the delete target, not the recreated one
+    expect(deletedIds).toEqual([old.assemblyFileId])
 
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
-    expect(ch.dbxRootPath).toBe(ROOT) // path unchanged
-    expect(ch.dbxCursor).toBe('cursor:new')
+    expect(ch.lastSyncedAt).not.toBeNull() // a rename is a real change
   })
 
-  it('recovery failure propagates so the run retries (cursor untouched)', async () => {
-    const channel = await seedMovableChannel('acc-reset-fail')
-    dbxContinue(() =>
-      dropboxRpcError({ status: 409, errorSummary: 'reset/..', error: { '.tag': 'reset' } }),
-    )
-    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: ROOT }) })
-    mockDropboxRpc('/2/files/list_folder/get_latest_cursor', () =>
+  it('plain move, nothing changed → adopts path + cursor without a false last-synced', async () => {
+    const channel = await seedMovableChannel('acc-move-noop')
+    const keep = await fileSyncSeeder.create({
+      ...synced(),
+      channelSyncId: channel.id,
+      itemPath: '/keep.txt',
+      dbxFileId: 'dbx:keep',
+      object: ObjectType.FILE,
+      contentHash: 'h-keep',
+    })
+    // Same file, same hash, just under the new root — no real change.
+    const unchanged = dropboxEntryFactory.build({
+      id: 'dbx:keep',
+      name: 'keep.txt',
+      path_display: '/moved-root/keep.txt',
+      content_hash: 'h-keep',
+    })
+    server.use(...paginateDropboxListFolder([unchanged]))
+    dbxContinue(rootMoved) // registered last so the dead-cursor 409 wins over the paginator
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/moved-root' }) })
+    // No create/delete/download mocks: a wrongful sync would hit an unmocked endpoint and fail.
+
+    await new DropboxWebhook().fetchDropBoxChanges('acc-move-noop')
+
+    const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
+    expect(ch.dbxRootPath).toBe('/moved-root')
+    expect(ch.dbxCursor).toBe('cursor:1')
+    expect(ch.lastSyncedAt).toBeNull() // nothing changed → no false sync (OUT-4142)
+
+    // The row is untouched (not recreated: same Assembly file id, still live).
+    const [row] = await db
+      .select()
+      .from(fileFolderSync)
+      .where(eq(fileFolderSync.dbxFileId, 'dbx:keep'))
+    expect(row).toMatchObject({ assemblyFileId: keep.assemblyFileId, deletedAt: null })
+  })
+
+  it('recovery failure propagates so the run retries (path + cursor untouched)', async () => {
+    const channel = await seedMovableChannel('acc-recover-fail')
+    dbxContinue(cursorReset)
+    mockDropboxGetMetadata({ 'id:root': dropboxFolderMetadata({ path_display: '/moved-root' }) })
+    // The re-listing itself fails, before anything is persisted.
+    mockDropboxRpc('/2/files/list_folder', () =>
       dropboxRpcError({ status: 500, errorSummary: 'boom', error: {} }),
     )
 
-    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-reset-fail')).rejects.toThrow()
+    await expect(new DropboxWebhook().fetchDropBoxChanges('acc-recover-fail')).rejects.toThrow()
 
     const [ch] = await db.select().from(channelSync).where(eq(channelSync.id, channel.id))
-    expect(ch.dbxCursor).toBe('cursor:0') // stale cursor left as-is for the retry
+    expect(ch.dbxRootPath).toBe(ROOT) // nothing adopted
+    expect(ch.dbxCursor).toBe('cursor:stale') // stale cursor left as-is for the retry
   })
 
   it('recovery cannot run without a saved root id → propagates, cursor untouched', async () => {
