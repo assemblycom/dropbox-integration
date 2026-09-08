@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import type { Dropbox } from 'dropbox'
 import z from 'zod'
 import env from '@/config/server.env'
@@ -8,19 +8,27 @@ import {
   type DropboxConnectionTokens,
   dropboxConnections,
 } from '@/db/schema/dropboxConnections.schema'
+import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
+import { MAX_FILES_LIMIT } from '@/features/sync/constant'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
-import type { DropboxFileListFolderResultEntries } from '@/features/sync/types'
+import {
+  type DropboxFileListFolderResultEntries,
+  DropboxFileListFolderResultEntriesSchema,
+  type WhereClause,
+} from '@/features/sync/types'
 import {
   isDbxCursorResetError,
   isDbxRootMovedError,
 } from '@/features/webhook/dropbox/utils/dbxCursorErrors'
 import { getDropboxChanges } from '@/features/webhook/dropbox/utils/getDropboxChanges'
+import { synthesizeDbxDeletes } from '@/features/webhook/dropbox/utils/synthesizeDbxDeletes'
 import { generateToken } from '@/lib/copilot/generateToken'
 import User from '@/lib/copilot/models/User.model'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import logger from '@/lib/logger'
 import { withRetry } from '@/lib/withRetry'
 import { handleChannelFileChanges, processDropboxChanges } from '@/trigger/processFileSync'
+import { classifyDbxChanges } from '@/utils/classify-dbx-changes'
 
 const DEBOUNCE_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -115,27 +123,86 @@ export class DropboxWebhook {
     })
   }
 
-  // A cursor continue can fail because its root can't be resolved — the folder was moved
-  // (even out of its parent), renamed, or the cursor was reset while the stored path is
-  // stale. Never trust the stored path: re-resolve the folder's current path by its stable
-  // id, reset the cursor there, and save both path and cursor.
+  // Full recursive listing at `path`, returning its own cursor as the next baseline.
+  private async listFolderEntries(dbxClient: Dropbox, path: string) {
+    const entries: DropboxFileListFolderResultEntries = []
+    let page = await dbxClient.filesListFolder({
+      path,
+      recursive: true,
+      limit: MAX_FILES_LIMIT,
+      include_non_downloadable_files: false,
+    })
+    while (true) {
+      entries.push(...DropboxFileListFolderResultEntriesSchema.parse(page.result.entries))
+      if (!page.result.has_more) return { entries, cursor: page.result.cursor }
+      page = await dbxClient.filesListFolderContinue({ cursor: page.result.cursor })
+    }
+  }
+
+  // A dead cursor (root moved/renamed, or cursor reset) can't be continued. Re-resolve the
+  // folder by its stable id, then reconcile the skipped gap by re-listing and diffing
+  // against sync records, so no change is lost. The listing's cursor becomes the baseline.
   private async recoverCursor(
     channel: ChannelSyncSelectType,
-    mapFilesService: MapFilesService,
     dbxClient: Dropbox,
+    mapFilesService: MapFilesService,
+    user: User,
+    connectionToken: DropboxConnectionTokens,
   ) {
-    logger.info(`WebhookService#recoverCursor :: Recovering cursor by id. Channel: ${channel.id}`)
+    logger.info(`WebhookService#recoverCursor :: Reconciling by id. Channel: ${channel.id}`)
     const response = await this.getDropboxFileMetadata(
       z.string().parse(channel.dbxRootId),
       dbxClient,
     )
     const newPath = z.string().parse(response.result.path_display)
-    const cursorData = await dbxClient.filesListFolderGetLatestCursor({
-      path: newPath,
-      recursive: true,
-    })
+
+    // Read mapped rows before listing, so a row added by a concurrent Assembly→Dropbox push
+    // shows up in the listing but not here — reconciled as a harmless create, not a spurious
+    // delete. Only dbxFileId-bearing rows are delete candidates; a null id is in-flight.
+    const mappedRows = await mapFilesService.getAllFileMaps(
+      and(
+        eq(fileFolderSync.channelSyncId, channel.id),
+        isNotNull(fileFolderSync.dbxFileId),
+      ) as WhereClause,
+    )
+
+    const { entries, cursor } = await this.listFolderEntries(dbxClient, newPath)
+
+    // Synthesize the missing deletes, then classify to see if the gap changed anything.
+    const allEntries = [...entries, ...synthesizeDbxDeletes(entries, mappedRows, newPath)]
+    const { deleted, created, contentUpdated } = classifyDbxChanges(allEntries, mappedRows)
+    const hasChanges = deleted.length + created.length + contentUpdated.length > 0
+
+    if (hasChanges) {
+      // Fan out only the changed entries, not the whole listing.
+      const changedFiles = [...deleted, ...created, ...contentUpdated]
+      const result = await handleChannelFileChanges.triggerAndWait(
+        {
+          files: changedFiles,
+          channelSyncId: channel.id,
+          dbxRootPath: newPath,
+          assemblyChannelId: channel.assemblyChannelId,
+          user,
+          connectionToken,
+        },
+        { concurrencyKey: channel.id },
+      )
+      // Don't adopt the new cursor if reconciliation failed, or the gap deltas are lost.
+      // Throwing lets the run retry from the still-stored stale cursor.
+      if (!result.ok) {
+        throw new Error(
+          `handleChannelFileChanges failed during recovery for channel ${channel.id}`,
+          {
+            cause: result.error,
+          },
+        )
+      }
+    }
+
+    // Adopt the new path + listing cursor. Stamp lastSyncedAt only when the gap actually
+    // had changes, so a plain move doesn't report a sync that never happened (OUT-4142).
     await mapFilesService.updateChannelMapById(
-      { dbxRootPath: newPath, dbxCursor: cursorData.result.cursor },
+      { dbxRootPath: newPath, dbxCursor: cursor, ...(hasChanges && { lastSyncedAt: new Date() }) },
       channel.id,
     )
   }
@@ -237,7 +304,7 @@ export class DropboxWebhook {
       // A moved/renamed root or a cursor reset both fail here, and the stored path may be
       // gone — so recover by re-resolving the folder by id. Anything else propagates.
       if (isDbxRootMovedError(error) || isDbxCursorResetError(error)) {
-        await this.recoverCursor(channel, mapFilesService, dbxClient)
+        await this.recoverCursor(channel, dbxClient, mapFilesService, user, connectionToken)
       } else {
         throw error
       }
