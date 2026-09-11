@@ -16,7 +16,11 @@ import {
   fileFolderSync,
 } from '@/db/schema/fileFolderSync.schema'
 import APIError from '@/errors/APIError'
-import { DBX_URL_PATH } from '@/features/sync/constant'
+import {
+  DBX_URL_PATH,
+  DROPBOX_SINGLE_UPLOAD_MAX_BYTES,
+  DROPBOX_UPLOAD_CHUNK_BYTES,
+} from '@/features/sync/constant'
 import { MapFilesService } from '@/features/sync/lib/MapFiles.service'
 import type {
   AssemblyToDropboxSyncFilesPayload,
@@ -982,27 +986,62 @@ export class SyncService extends AuthenticatedDropboxService {
 
   private async uploadFileInDropbox(file: CopilotFileRetrieve, path: string) {
     logger.info('SyncService#uploadFileInDropbox :: Uploading file to', path)
-    if (file.downloadUrl) {
-      // download file from Assembly
-      const resp = await fetch(file.downloadUrl)
-      // upload file to dropbox
-      const dbxResponse = await this.dbxClient.uploadFile({
-        urlPath: DBX_URL_PATH.fileUpload,
-        filePath: path,
-        body: resp.body,
-        rootNamespaceId: z.string().parse(this.connectionToken.rootNamespaceId),
-        refreshToken: this.connectionToken.refreshToken,
-      })
-      logger.info('SyncService#uploadFileInDropbox :: File uploaded to', path)
-      return {
-        dbxFileId: dbxResponse.id,
-        contentHash: dbxResponse.contentHash,
-      }
+    if (!file.downloadUrl) {
+      logger.error(
+        `SyncService#uploadFileInDropbox. Assembly file with Id: ${file.id} has no download url. Channel ID: ${file.channelId}`,
+      )
+      throw new Error('File not found')
     }
-    logger.error(
-      `SyncService#uploadFileInDropbox. Assembly file with Id: ${file.id} has no download url. Channel ID: ${file.channelId}`,
-    )
-    throw new Error('File not found')
+
+    const downloadUrl = file.downloadUrl
+    const rootNamespaceId = z.string().parse(this.connectionToken.rootNamespaceId)
+    const refreshToken = this.connectionToken.refreshToken
+
+    // Over the single-shot limit (or unknown size) goes through an upload session.
+    const needsSession = file.size === undefined || file.size > DROPBOX_SINGLE_UPLOAD_MAX_BYTES
+
+    logger.info('SyncService#uploadFileInDropbox :: Upload method chosen', {
+      path,
+      method: needsSession ? 'upload session' : 'direct upload',
+      sizeBytes: file.size ?? null,
+    })
+
+    const dbxResponse = needsSession
+      ? await this.dbxClient.uploadFileSession({
+          filePath: path,
+          // node-fetch's body is a Node stream, an async iterable at runtime.
+          getBody: async () =>
+            (await this.fetchAssemblyBody(downloadUrl)) as unknown as AsyncIterable<Uint8Array>,
+          rootNamespaceId,
+          refreshToken,
+          chunkSize: DROPBOX_UPLOAD_CHUNK_BYTES,
+          expectedSize: file.size,
+        })
+      : await this.dbxClient.uploadFile({
+          urlPath: DBX_URL_PATH.fileUpload,
+          filePath: path,
+          body: await this.fetchAssemblyBody(downloadUrl),
+          rootNamespaceId,
+          refreshToken,
+        })
+
+    logger.info('SyncService#uploadFileInDropbox :: File uploaded to', path)
+    return {
+      dbxFileId: dbxResponse.id,
+      contentHash: dbxResponse.contentHash,
+    }
+  }
+
+  // Fetches the Assembly body, failing on a non-ok response so an error page is
+  // never streamed to Dropbox as the file content.
+  private async fetchAssemblyBody(downloadUrl: string): Promise<NodeJS.ReadableStream> {
+    const resp = await fetch(downloadUrl)
+    if (!resp.ok || !resp.body) {
+      throw new Error(
+        `SyncService#uploadFileInDropbox. Assembly download failed with status ${resp.status}`,
+      )
+    }
+    return resp.body
   }
 
   async removeChannelSyncMapping(channelSyncId: string) {
