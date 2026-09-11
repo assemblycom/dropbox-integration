@@ -24,19 +24,26 @@ const parseLevel = (value: string | undefined): LogLevel => {
 // Read per call so the level can be set without a rebuild (and stays testable).
 const minRank = (): number => LEVEL_RANK[parseLevel(process.env.LOG_LEVEL)]
 
-// Bound object output so one log line can't dump a whole payload / file list.
-// breakLength: Infinity keeps each log on one physical line so line-based log
-// collectors don't split a wrapped object across entries.
-const inspectOptions: util.InspectOptions = {
-  depth: 2,
-  colors: Boolean(process.stdout.isTTY),
-  maxArrayLength: 10,
-  maxStringLength: 512,
-  breakLength: Infinity,
+// How many object levels to print. Deep enough to show nested payloads (e.g. a
+// batched item's opts/file), still capped so a line can't dump everything.
+const DEFAULT_DEPTH = 4
+
+const parseDepth = (): number => {
+  const raw = Number(process.env.LOG_DEPTH)
+  return Number.isInteger(raw) && raw >= 0 && raw <= 10 ? raw : DEFAULT_DEPTH
 }
 
+// breakLength: Infinity keeps each log on one physical line so line-based log
+// collectors don't split a wrapped object across entries.
 function formatArg(arg: unknown): string {
-  return typeof arg === 'string' ? arg : util.inspect(arg, inspectOptions)
+  if (typeof arg === 'string') return arg
+  return util.inspect(arg, {
+    depth: parseDepth(),
+    colors: Boolean(process.stdout.isTTY),
+    maxArrayLength: 10,
+    maxStringLength: 512,
+    breakLength: Infinity,
+  })
 }
 
 function loggerFactory(level: LogLevel): (...args: unknown[]) => void {

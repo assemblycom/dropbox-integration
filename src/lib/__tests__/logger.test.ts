@@ -4,15 +4,32 @@ import { logger } from '@/lib/logger'
 afterEach(() => {
   vi.restoreAllMocks()
   delete process.env.LOG_LEVEL
+  delete process.env.LOG_DEPTH
 })
 
 describe('logger', () => {
-  it('caps object depth so nested payloads are not fully dumped', () => {
+  it('shows nested payload fields like opts and file inside a batch array', () => {
     const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
-    logger.info({ a: { b: { c: { secret: 'deep-value' } } } })
+    // Mirrors the batchTriggerAndWait item shape: [{ payload: { opts, file } }].
+    logger.info([{ payload: { opts: { channelId: 'ch-1' }, file: { id: 'f-1' } } }])
     const out = spy.mock.calls[0][0] as string
-    expect(out).not.toContain('deep-value')
+    expect(out).toContain("channelId: 'ch-1'")
+    expect(out).toContain("id: 'f-1'")
+  })
+
+  it('still caps extremely deep objects so a log line stays bounded', () => {
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    logger.info({ a: { b: { c: { d: { e: { secret: 'too-deep' } } } } } })
+    const out = spy.mock.calls[0][0] as string
+    expect(out).not.toContain('too-deep')
     expect(out).toContain('[Object]')
+  })
+
+  it('honours LOG_DEPTH for deeper inspection', () => {
+    process.env.LOG_DEPTH = '6'
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    logger.info({ a: { b: { c: { d: { e: { secret: 'now-visible' } } } } } })
+    expect(spy.mock.calls[0][0] as string).toContain('now-visible')
   })
 
   it('truncates long arrays instead of dumping every element', () => {
