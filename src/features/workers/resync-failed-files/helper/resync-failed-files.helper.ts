@@ -25,8 +25,8 @@ type PortalDeps = {
   mapFilesService: MapFilesService
 }
 
-// Pending uploads older than 12 hours are treated as abandoned and reclaimed.
-const STUCK_PENDING_THRESHOLD_MS = 12 * 60 * 60 * 1000
+// Pending uploads older than 2 hours are treated as abandoned and reclaimed.
+const STUCK_PENDING_THRESHOLD_MS = 2 * 60 * 60 * 1000
 
 /** Entry point for the scheduled sweep — per-row errors are recorded, never rethrown. */
 export const retryFailedSyncsForPortal = async (portalId: string, rows: FileSyncSelectType[]) => {
