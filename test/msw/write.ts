@@ -93,6 +93,31 @@ export function mockDropboxUpload(
   )
 }
 
+// Upload session: start -> append_v2 (per chunk) -> finish. Returns call counters so a
+// test can assert the session path (not single-shot) was taken. finish carries the
+// target path under commit.path and its body parses like a normal upload.
+export function mockDropboxUploadSession(
+  resolve: (filePath: string) => DropboxMeta = (path) =>
+    dropboxFileMetadata({ path_display: path, id: `id:dbx:${path}` }),
+): { calls: { start: number; append: number; finish: number } } {
+  const calls = { start: 0, append: 0, finish: 0 }
+  mockDropboxContent('/files/upload_session/start', () => {
+    calls.start++
+    return HttpResponse.json({ session_id: 'session:test' })
+  })
+  mockDropboxContent('/files/upload_session/append_v2', () => {
+    calls.append++
+    return new HttpResponse(null, { status: 200 })
+  })
+  mockDropboxContent('/files/upload_session/finish', ({ request }) => {
+    calls.finish++
+    const arg = request.headers.get('Dropbox-API-Arg')
+    const commitPath = arg ? (JSON.parse(arg) as { commit: { path: string } }).commit.path : ''
+    return HttpResponse.json(resolve(commitPath))
+  })
+  return { calls }
+}
+
 // Download: body + Dropbox-API-Result header carrying the size (client reads size, not Content-Length).
 export function mockDropboxDownload(
   bodyByPath: Record<string, string>,
