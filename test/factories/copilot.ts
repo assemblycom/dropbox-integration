@@ -13,6 +13,8 @@ export const copilotFileFactory = Factory.define<CopilotFileRetrieve>(({ params 
     name,
     object: params.object ?? ObjectType.FILE,
     path: `/${name}`,
+    // Small so uploads take the single-shot path by default; folders have no size.
+    size: isFolder ? undefined : 1024,
   }
 })
 

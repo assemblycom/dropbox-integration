@@ -139,6 +139,7 @@ export const CopilotFileRetrieveSchema = z.object({
   path: z.string(),
   status: z.string().optional(),
   downloadUrl: z.string().optional(),
+  size: z.number().optional(),
   previousAttributes: z
     .object({
       name: z.string().optional(),
