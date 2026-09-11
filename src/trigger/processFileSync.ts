@@ -446,12 +446,11 @@ export const resyncFailedFilesAndMasterSync = task({
   },
 })
 
-/** Scheduled sweep: fans out per-portal retries for rows with pending_action tombstones (subject to backoff + MAX_ATTEMPTS). Replaces the previous Vercel cron. Runs twice a day at off-peak hours (08:00 and 20:00 UTC). */
+/** Scheduled sweep: fans out per-portal retries for rows with pending_action tombstones (subject to backoff + MAX_ATTEMPTS). Replaces the previous Vercel cron. Runs three times a day, every 8 hours (00:00, 08:00, 16:00 UTC). */
 export const retryFailedSyncsSchedule = schedules.task({
   id: 'retry-failed-syncs-schedule',
   machine,
-  // cron: '*/2 * * * *',
-  cron: '0 8,20 * * *',
+  cron: '0 0,8,16 * * *',
   queue: {
     name: 'retry-failed-syncs-schedule',
     concurrencyLimit: 1,
