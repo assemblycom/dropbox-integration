@@ -10,7 +10,14 @@ import { type DropboxFileMetadata, DropboxFileMetadataSchema } from '@/lib/dropb
 import logger from '@/lib/logger'
 
 import { withRetry } from '@/lib/withRetry'
+import { chunkStream } from '@/utils/chunkStream'
 import { dropboxArgHeader } from '@/utils/header'
+
+const UPLOAD_SESSION_PATH = {
+  start: '/files/upload_session/start',
+  append: '/files/upload_session/append_v2',
+  finish: '/files/upload_session/finish',
+}
 
 export class DropboxClient {
   protected readonly clientInstance: Dropbox
@@ -59,7 +66,7 @@ export class DropboxClient {
   private async manualFetch(
     url: string,
     headers?: Record<string, string>,
-    body?: NodeJS.ReadableStream | null,
+    body?: NodeJS.ReadableStream | Buffer | null,
     otherOptions?: Record<string, string>,
     method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'POST',
   ) {
@@ -259,6 +266,110 @@ export class DropboxClient {
     return DropboxFileMetadataSchema.parse(camelKeys(await response.json()))
   }
 
+  // Chunked upload session for files too large for /files/upload. getBody yields a
+  // fresh stream so a retry restarts the whole session.
+  async _uploadFileSession({
+    filePath,
+    getBody,
+    rootNamespaceId,
+    refreshToken,
+    chunkSize,
+    expectedSize,
+  }: {
+    filePath: string
+    getBody: () => Promise<AsyncIterable<Uint8Array>>
+    rootNamespaceId: string
+    refreshToken: string
+    chunkSize: number
+    expectedSize?: number
+  }): Promise<DropboxFileMetadata> {
+    await this.dbxAuthClient.refreshAccessToken(refreshToken)
+
+    const body = await getBody()
+    let sessionId: string | null = null
+    let offset = 0
+
+    for await (const chunk of chunkStream(body, chunkSize)) {
+      if (sessionId === null) {
+        const started = await this.sessionCall(
+          UPLOAD_SESSION_PATH.start,
+          { close: false },
+          chunk,
+          rootNamespaceId,
+          filePath,
+        )
+        sessionId = ((await started.json()) as { session_id: string }).session_id
+      } else {
+        await this.sessionCall(
+          UPLOAD_SESSION_PATH.append,
+          { cursor: { session_id: sessionId, offset }, close: false },
+          chunk,
+          rootNamespaceId,
+          filePath,
+        )
+      }
+      offset += chunk.length
+    }
+
+    // No chunks: open an empty session so finish has a cursor.
+    if (sessionId === null) {
+      const started = await this.sessionCall(
+        UPLOAD_SESSION_PATH.start,
+        { close: false },
+        Buffer.alloc(0),
+        rootNamespaceId,
+        filePath,
+      )
+      sessionId = ((await started.json()) as { session_id: string }).session_id
+    }
+
+    // Never finish a short stream — a truncated download must not commit a file.
+    if (expectedSize !== undefined && offset !== expectedSize) {
+      throw new Error(
+        `DropboxClient#uploadFileSession. Streamed ${offset} bytes but expected ${expectedSize} for ${filePath}`,
+      )
+    }
+
+    const finished = await this.sessionCall(
+      UPLOAD_SESSION_PATH.finish,
+      {
+        cursor: { session_id: sessionId, offset },
+        commit: { path: filePath, mode: 'add', autorename: false },
+      },
+      Buffer.alloc(0),
+      rootNamespaceId,
+      filePath,
+    )
+    return DropboxFileMetadataSchema.parse(camelKeys(await finished.json()))
+  }
+
+  // One request in an upload session. Throws the shared Dropbox error on non-200.
+  private async sessionCall(
+    urlPath: string,
+    arg: Record<string, unknown>,
+    body: Buffer,
+    rootNamespaceId: string,
+    filePath: string,
+  ): Promise<NodeFetchResponse> {
+    const headers = {
+      Authorization: `Bearer ${this.dbxAuthClient.authInstance.getAccessToken()}`,
+      'Dropbox-API-Path-Root': dropboxArgHeader({
+        '.tag': 'namespace_id',
+        namespace_id: rootNamespaceId,
+      }),
+      'Dropbox-API-Arg': dropboxArgHeader(arg),
+      'Content-Type': 'application/octet-stream',
+    }
+    const response = await this.manualFetch(`${env.DROPBOX_API_URL}${urlPath}`, headers, body)
+    if (response.status !== httpStatus.OK) {
+      throw await this.buildDropboxResponseError(
+        response,
+        `DropboxClient#uploadFileSession. Failed to upload file: ${filePath}`,
+      )
+    }
+    return response
+  }
+
   private wrapWithRetry<Args extends unknown[], R>(
     fn: (...args: Args) => Promise<R>,
   ): (...args: Args) => Promise<R> {
@@ -273,4 +384,6 @@ export class DropboxClient {
   getAllFilesFolders = this.wrapWithRetry(this._getAllFilesFolders)
   downloadFile = this.wrapWithRetry(this._downloadFile)
   uploadFile = this.wrapWithRetry(this._uploadFile)
+  // Retry restarts the whole session — `getBody` hands back a fresh stream each attempt.
+  uploadFileSession = this.wrapWithRetry(this._uploadFileSession)
 }
