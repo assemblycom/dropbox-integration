@@ -261,7 +261,7 @@ describe('resync sweep', () => {
       assemblyFileId: oldAssemblyId,
       object: ObjectType.FILE,
       pendingActionLastAttemptAt: minutesAgo(6),
-      createdAt: hoursAgo(13), // older than the 2h threshold → abandoned
+      createdAt: hoursAgo(3), // older than the 2h threshold → abandoned
     })
     mockDropboxGetMetadata({
       'dbx:aband': dropboxFileMetadata({ path_display: '/root/aband.txt', id: 'dbx:aband' }),
@@ -803,7 +803,7 @@ describe('resync sweep', () => {
         assemblyFileId: oldId,
         object: ObjectType.FILE,
         pendingActionLastAttemptAt: minutesAgo(6),
-        createdAt: hoursAgo(13), // abandoned → delete stale + recreate
+        createdAt: hoursAgo(3), // older than the 2h threshold → abandoned, delete stale + recreate
       })
       mockDropboxGetMetadata({
         'dbx:doc': dropboxFileMetadata({ path_display: '/root/doc.txt', id: 'dbx:doc' }),
