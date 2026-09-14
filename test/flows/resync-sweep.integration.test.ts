@@ -220,7 +220,7 @@ describe('resync sweep', () => {
     ).rejects.toMatchObject({ status: 409 })
   })
 
-  // The created Assembly file is still "pending" and the row is only 30 min old (under the 2h
+  // The created Assembly file is still "pending" and the row is only 30 min old (under the 4h
   // cut-off), so resync assumes a slow in-progress upload: retry later, no delete/recreate.
   it('leaves a recently-stuck Assembly upload alone and retries it later', async () => {
     const { connection, channel } = await seed()
@@ -233,7 +233,7 @@ describe('resync sweep', () => {
       assemblyFileId: assemblyFile.id,
       object: ObjectType.FILE,
       pendingActionLastAttemptAt: minutesAgo(6),
-      createdAt: minutesAgo(30), // younger than the 2h threshold
+      createdAt: minutesAgo(30), // younger than the 4h threshold
     })
     mockDropboxGetMetadata({
       'dbx:young': dropboxFileMetadata({ path_display: '/root/young.txt' }),
@@ -261,7 +261,7 @@ describe('resync sweep', () => {
       assemblyFileId: oldAssemblyId,
       object: ObjectType.FILE,
       pendingActionLastAttemptAt: minutesAgo(6),
-      createdAt: hoursAgo(3), // older than the 2h threshold → abandoned
+      createdAt: hoursAgo(5), // older than the 4h threshold → abandoned
     })
     mockDropboxGetMetadata({
       'dbx:aband': dropboxFileMetadata({ path_display: '/root/aband.txt', id: 'dbx:aband' }),
@@ -803,7 +803,7 @@ describe('resync sweep', () => {
         assemblyFileId: oldId,
         object: ObjectType.FILE,
         pendingActionLastAttemptAt: minutesAgo(6),
-        createdAt: hoursAgo(3), // older than the 2h threshold → abandoned, delete stale + recreate
+        createdAt: hoursAgo(5), // older than the 4h threshold → abandoned, delete stale + recreate
       })
       mockDropboxGetMetadata({
         'dbx:doc': dropboxFileMetadata({ path_display: '/root/doc.txt', id: 'dbx:doc' }),
