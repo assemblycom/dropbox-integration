@@ -7,11 +7,6 @@ on:
 permissions:
   contents: read
 
-# Newer push to main supersedes an in-flight deploy run.
-concurrency:
-  group: deploy-production
-  cancel-in-progress: true
-
 env:
   CI: true
 
@@ -143,6 +138,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: Production
     timeout-minutes: 20
+    # Serialize deploys and never cancel one mid-publish: a newer push waits
+    # rather than interrupting an in-flight production deploy.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
