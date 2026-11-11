@@ -25,6 +25,22 @@ Notes:
   workflow. The new project also needs the same environment variables as the old one
   (Dropbox, database, Assembly keys, etc.).
 
+## Only one project may be active at a time
+
+Both projects share one database, and concurrency limits are per project, so two active
+projects can process the same event twice (duplicate files, spurious deletes). The two
+scheduled tasks, `retry-failed-syncs-schedule` and `pending-webhook-catch-up`, read the same
+pending rows from that database, so only one project's schedules should be active at a time.
+
+- **Cutover:** before pointing Vercel at the new key, deactivate both schedules in the old
+  project (dashboard Schedules, then deactivate) and cancel its queued runs (Runs, then cancel
+  queued). Do not restore billing on the old project until that is done.
+- **Rollback:** unset `TRIGGER_BACKUP_SECRET_KEY` and redeploy, or deactivate the new
+  project's schedules, and only then re-activate the old project's schedules.
+- **No dashboard access to the old project:** leaving its billing lapsed is the fence.
+  Rotating `DATABASE_URL` or `COPILOT_API_KEY` for the old project so its tasks cannot reach
+  the database also works.
+
 ## Testing on a Vercel preview
 
 1. Give the preview its own **non-production** `DATABASE_URL`. `scripts/build/build.sh` (the
@@ -41,4 +57,4 @@ Notes:
 ## Rollback
 
 Unset `TRIGGER_BACKUP_SECRET_KEY` and redeploy. Triggers go back to the project behind
-`TRIGGER_SECRET_KEY`.
+`TRIGGER_SECRET_KEY`. Follow the rollback step above for the schedules.
