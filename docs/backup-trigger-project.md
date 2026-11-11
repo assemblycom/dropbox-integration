@@ -38,8 +38,9 @@ pending rows from that database, so only one project's schedules should be activ
 - **Rollback:** unset `TRIGGER_BACKUP_SECRET_KEY` and redeploy, or deactivate the new
   project's schedules, and only then re-activate the old project's schedules.
 - **No dashboard access to the old project:** leaving its billing lapsed is the fence.
-  Rotating `DATABASE_URL` or `COPILOT_API_KEY` for the old project so its tasks cannot reach
-  the database also works.
+  Blocking the old project's database access through `DATABASE_URL` (rotate the database
+  credentials) also works. Changing `COPILOT_API_KEY` does not, because the schedules read
+  the database before any Assembly call.
 
 ## Testing on a Vercel preview
 
