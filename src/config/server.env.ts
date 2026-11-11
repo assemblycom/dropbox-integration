@@ -16,6 +16,8 @@ const ServerEnvSchema = z
     DROPBOX_SCOPES: z.string().min(1),
     DROPBOX_API_URL: z.url(),
     TRIGGER_MACHINE: TriggerMachineSchema,
+    // Optional: reroutes every trigger from the Next app to a second Trigger.dev project.
+    TRIGGER_BACKUP_SECRET_KEY: z.string().optional(),
     WEBHOOK_CATCHUP_CRON: z.string().min(1),
     ASSEMBLY_ENV: z.string().optional(),
     COPILOT_ENV: z.string().optional(),

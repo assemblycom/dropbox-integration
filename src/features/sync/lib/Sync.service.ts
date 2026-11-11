@@ -34,6 +34,7 @@ import type User from '@/lib/copilot/models/User.model'
 import type { CopilotFileRetrieve } from '@/lib/copilot/types'
 import AuthenticatedDropboxService from '@/lib/dropbox/AuthenticatedDropbox.service'
 import logger from '@/lib/logger'
+import '@/lib/triggerClient'
 import { bidirectionalMasterSync } from '@/trigger/processFileSync'
 import {
   appendDateTimeToFilePath,

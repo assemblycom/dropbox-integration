@@ -6,6 +6,7 @@ import { fileFolderSync } from '@/db/schema/fileFolderSync.schema'
 import APIError from '@/errors/APIError'
 import type User from '@/lib/copilot/models/User.model'
 import logger from '@/lib/logger'
+import '@/lib/triggerClient'
 import {
   resyncFailedFilesAndMasterSync,
   resyncFailedFilesInAssembly,
