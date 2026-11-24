@@ -20,6 +20,7 @@ import { retryFailedSyncsForPortal } from '@/features/workers/resync-failed-file
 import { ResyncService } from '@/features/workers/resync-failed-files/lib/resync-failed-files.service'
 import { CopilotAPI } from '@/lib/copilot/CopilotAPI'
 import type User from '@/lib/copilot/models/User.model'
+import { withCronMonitor } from '@/lib/cronMonitor'
 import { DropboxAuthClient } from '@/lib/dropbox/DropboxAuthClient'
 import { DropboxClient } from '@/lib/dropbox/DropboxClient'
 import { fanOutAndWait } from '@/lib/fanOut'
@@ -446,18 +447,26 @@ export const resyncFailedFilesAndMasterSync = task({
   },
 })
 
+const RETRY_FAILED_SYNCS_CRON = '0 0,8,16 * * *'
+
 /** Scheduled sweep: fans out per-portal retries for rows with pending_action tombstones (subject to backoff + MAX_ATTEMPTS). Replaces the previous Vercel cron. Runs three times a day, every 8 hours (00:00, 08:00, 16:00 UTC). */
 export const retryFailedSyncsSchedule = schedules.task({
   id: 'retry-failed-syncs-schedule',
   machine,
-  cron: '0 0,8,16 * * *',
+  cron: RETRY_FAILED_SYNCS_CRON,
   queue: {
     name: 'retry-failed-syncs-schedule',
     concurrencyLimit: 1,
   },
   retry: { maxAttempts: 1 },
-  run: async () => {
-    logger.info('retryFailedSyncsSchedule :: sweep tick')
-    await new ResyncService().resyncFailedFiles()
-  },
+  run: () =>
+    withCronMonitor({
+      slug: 'retry-failed-syncs-schedule',
+      cron: RETRY_FAILED_SYNCS_CRON,
+      thresholds: { checkinMargin: 30, maxRuntime: 30, failureIssueThreshold: 1 },
+      run: async () => {
+        logger.info('retryFailedSyncsSchedule :: sweep tick')
+        await new ResyncService().resyncFailedFiles()
+      },
+    }),
 })
